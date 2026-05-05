@@ -87,10 +87,10 @@ Decisions are organized by **Part 1 (due 8 May)** and **Part 2 (due 22 May)**. W
 
 These shape every line of code that follows.
 
-- [ ] **5.1 Implementation language** — *not yet decided*
-- [ ] **5.2 Surface syntax style** — *not yet decided*
-- [ ] **5.3 Statement terminator** — *not yet decided*
-- [ ] **5.4 Assignment operator** — *not yet decided*
+- [x] **5.1 Implementation language** — **Java.** Clean class hierarchy for AST nodes; garbage collection removes a class of bugs that would otherwise compete for attention with the language-design work.
+- [x] **5.2 Surface syntax style** — **C-family with curly braces.** Block structure is immediately visible; matches the implementation language's mental model; lexer doesn't need indentation tracking.
+- [x] **5.3 Statement terminator** — **Semicolon (`;`).** Lexer can ignore whitespace freely; no newline-state to track.
+- [x] **5.4 Assignment operator** — **`<-`.** Visually distinct from comparison `==`, eliminates the classic C-family `=` vs `==` confusion, and gives the language a small originality marker. Comparison operators are the standard C-family set: `==`, `!=`, `<`, `>`, `<=`, `>=`. Note: lexer uses maximal munch when disambiguating `<-` from `<=` from `<`.
 
 ### Round 2 — Names, binding, scope, lifetime (Sebesta Ch. 5)
 
@@ -121,10 +121,10 @@ Full expression semantics are a Part 2 deliverable. For Part 1 the parser must e
 
 The exact concrete syntax for each construct. Without this, the grammar can't be written.
 
-- [ ] **5.15 Process declaration syntax** — *not yet decided*
-- [ ] **5.16 Semaphore declaration syntax** — *not yet decided*
-- [ ] **5.17 wait/signal syntax** — *not yet decided*
-- [ ] **5.18 System declaration syntax** — *not yet decided*
+- [x] **5.15 Process declaration syntax** — **`process Name(burst: N, priority: N, arrival: N) { body }`**. Closed set of three fields: `burst` (mandatory, int), `priority` (optional, int, default 0), `arrival` (optional, int, default 0). Field order flexible since fields are named. Anything outside this set is a parse error. Fields inside the parameter list use `:` (named-field convention, like JSON / Python kwargs / Rust struct literals); statements inside `{ body }` use `<-` for assignment. Why a closed set: catches typo'd field names at parse time rather than letting them silently do nothing.
+- [x] **5.16 Semaphore declaration syntax** — **`semaphore Name <- N;`**. Initial value `N` is a mandatory non-negative integer. Why `<-` here but `:` in process parameter lists: `<-` is OSlang's operator for **single-target binding** (one name, one value, on its own line) — used for both declarations like this and runtime assignment. `:` is the operator for **named fields inside a multi-field list** — used in process declarations and (later) system declarations. A semaphore declaration is single-target, so it uses `<-`.
+- [x] **5.17 wait/post syntax** — **`wait(s);`** and **`post(s);`**, function-call style, one semaphore argument. `wait(s)` is the P operation: if `s > 0`, decrement and continue; otherwise block the calling process on `s`'s waiting queue. `post(s)` is the V operation: if any process is blocked on `s`, unblock one of them; otherwise increment `s`. Why these names: follows POSIX (`sem_wait`/`sem_post`) which has decades of systems-programming precedent. Chosen over Dijkstra's `wait`/`signal` because `signal` is overloaded with the unrelated C `signal()` UNIX-signal-handler API; chosen over `acquire`/`release` because the lock metaphor doesn't generalize to counting semaphores (e.g. `release(empty)` in producer/consumer reads wrong since nothing was acquired).
+- [x] **5.18 System declaration syntax** — **`system Name(processes: [P1, P2, ...], scheduler: SchedName);`**. Both fields mandatory, order flexible (named fields). Semicolon-terminated, no body block (a system has no code of its own — it just bundles processes with a scheduler). `processes` takes a bracketed comma-separated list of process identifiers; `scheduler` takes a single scheduler identifier referring to a user-declared scheduler instance (see 5.19). Why no body: empty `{}` would be syntactic noise pretending to be structure. Why user-declared scheduler instances rather than built-in scheduler names: consistent with how `processes` works (declare, then reference by name), and lets users define multiple scheduler configurations and reuse them across systems.
 - [ ] **5.19 Scheduler types supported in Part 1** — *not yet decided*
 - [ ] **5.20 run statement syntax** — *not yet decided*
 - [ ] **5.21 User-defined functions** — *not yet decided*
@@ -169,7 +169,7 @@ These are required for the final D1 spec (due 22 May) and the type checker / int
 - [x] Domain chosen (OS simulator DSL)
 - [x] Pair confirmed
 - [x] Hard scope limits agreed
-- [ ] Round 1 — Core syntax decisions locked
+- [x] Round 1 — Core syntax decisions locked
 - [ ] Round 2 — Names/binding/scope/lifetime locked
 - [ ] Round 3 — Primitive and structured types locked
 - [ ] Round 4 — Precedence and associativity locked
