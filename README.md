@@ -1,7 +1,5 @@
 # OSlang
 
-# OSlang
-
 A small domain-specific language for declaring operating-system concepts — processes, semaphores, and schedulers — and simulating their execution.
 
 > **Course project for CSE 341 (Concepts of Programming Languages), Gebze Technical University, Spring 2026.**
@@ -79,52 +77,78 @@ Deliverables per part:
 
 This section is filled in as decisions are locked. Each decision will record: the choice made, the one-sentence reason, and the rough Sebesta chapter it relates to. Detailed rationale (for D1 §4.8) will be written separately in our own voice.
 
-### Round 1 — Core decisions
+Decisions are organized by **Part 1 (due 8 May)** and **Part 2 (due 22 May)**. We are currently focused on Part 1. Part 2 decisions are listed at the end of this section for reference but will be addressed after the Part 1 deadline.
+
+---
+
+## PART 1 — Decisions required by 8 May
+
+### Round 1 — Core syntax decisions
+
+These shape every line of code that follows.
 
 - [ ] **5.1 Implementation language** — *not yet decided*
 - [ ] **5.2 Surface syntax style** — *not yet decided*
 - [ ] **5.3 Statement terminator** — *not yet decided*
 - [ ] **5.4 Assignment operator** — *not yet decided*
 
-### Round 2 — Type system (Sebesta Ch. 6)
+### Round 2 — Names, binding, scope, lifetime (Sebesta Ch. 5)
 
-- [ ] **5.5 Primitive types** — *not yet decided*
-- [ ] **5.6 Structured type** — *not yet decided*
-- [ ] **5.7 Semaphore: primitive or structured?** — *not yet decided*
-- [ ] **5.8 Strong typing** — *not yet decided*
-- [ ] **5.9 Implicit coercion** — *not yet decided*
-- [ ] **5.10 Type equivalence** — *not yet decided*
+Required by D1 §4.6 (graded section of the Part 1 design spec).
 
-### Round 3 — Names, binding, scope, lifetime (Sebesta Ch. 5)
+- [ ] **5.5 Identifier rules** — *not yet decided*
+- [ ] **5.6 Static or dynamic scoping** — *not yet decided*
+- [ ] **5.7 Lifetime of variables** — *not yet decided*
+- [ ] **5.8 When types are bound** — *not yet decided*
 
-- [ ] **5.11 Identifier rules** — *not yet decided*
-- [ ] **5.12 Static or dynamic scoping** — *not yet decided*
-- [ ] **5.13 Lifetime of variables** — *not yet decided*
-- [ ] **5.14 When types are bound** — *not yet decided*
+### Round 3 — Type system (only what the parser needs)
 
-### Round 4 — Expressions (Sebesta Ch. 7)
+Full type-system rules are a Part 2 deliverable. For Part 1 we only need to know *which types exist* so the lexer can recognize their keywords and the parser can handle declarations.
 
-- [ ] **5.15 Operator precedence** — *not yet decided*
-- [ ] **5.16 Associativity** — *not yet decided*
-- [ ] **5.17 Short-circuit evaluation** — *not yet decided*
-- [ ] **5.18 Operand evaluation order** — *not yet decided*
-- [ ] **5.19 Assignment as statement or expression** — *not yet decided*
+- [ ] **5.9 Primitive types** — *not yet decided*
+- [ ] **5.10 Structured type** — *not yet decided*
+- [ ] **5.11 Is Semaphore a primitive or structured type** — *not yet decided*
+
+### Round 4 — Expressions (only what the grammar needs)
+
+Full expression semantics are a Part 2 deliverable. For Part 1 the parser must encode operator precedence and associativity, so these are needed now.
+
+- [ ] **5.12 Operator precedence** — *not yet decided*
+- [ ] **5.13 Associativity** — *not yet decided*
+- [ ] **5.14 Assignment as statement or expression** — *not yet decided*
 
 ### Round 5 — Domain-specific constructs
 
-- [ ] **5.20 Process declaration syntax** — *not yet decided*
-- [ ] **5.21 Semaphore declaration syntax** — *not yet decided*
-- [ ] **5.22 wait/signal syntax** — *not yet decided*
-- [ ] **5.23 System declaration syntax** — *not yet decided*
-- [ ] **5.24 Scheduler types supported** — *not yet decided*
-- [ ] **5.25 run statement syntax** — *not yet decided*
-- [ ] **5.26 User-defined functions** — *not yet decided*
-- [ ] **5.27 Output commands** — *not yet decided*
-- [ ] **5.28 Control flow constructs** — *not yet decided*
+The exact concrete syntax for each construct. Without this, the grammar can't be written.
+
+- [ ] **5.15 Process declaration syntax** — *not yet decided*
+- [ ] **5.16 Semaphore declaration syntax** — *not yet decided*
+- [ ] **5.17 wait/signal syntax** — *not yet decided*
+- [ ] **5.18 System declaration syntax** — *not yet decided*
+- [ ] **5.19 Scheduler types supported in Part 1** — *not yet decided*
+- [ ] **5.20 run statement syntax** — *not yet decided*
+- [ ] **5.21 User-defined functions** — *not yet decided*
+- [ ] **5.22 Output commands** — *not yet decided*
+- [ ] **5.23 Control flow constructs** — *not yet decided*
 
 ### Round 6 — Grammar
 
-- [ ] **5.29 EBNF grammar** — *to be written after all of Round 1–5 is locked*
+- [ ] **5.24 EBNF grammar** — *to be written after Rounds 1–5 are locked*
+
+---
+
+## PART 2 — Deferred until after 8 May
+
+These are required for the final D1 spec (due 22 May) and the type checker / interpreter implementation. They do not affect the Part 1 lexer or parser, so we're explicitly setting them aside for now.
+
+- Strong typing rule
+- Implicit coercion rules
+- Type equivalence (name vs structural)
+- Short-circuit evaluation
+- Operand evaluation order
+- Parameter-passing mode
+- Operational semantics for two constructs
+- Design rationale paragraphs (D1 §4.8)
 
 ---
 
@@ -140,20 +164,25 @@ This section is filled in as decisions are locked. Each decision will record: th
 
 ## 7. Current status
 
+**Part 1 (due 8 May)**
+
 - [x] Domain chosen (OS simulator DSL)
 - [x] Pair confirmed
 - [x] Hard scope limits agreed
-- [ ] Round 1 decisions locked
-- [ ] Round 2 decisions locked
-- [ ] Round 3 decisions locked
-- [ ] Round 4 decisions locked
-- [ ] Round 5 decisions locked
+- [ ] Round 1 — Core syntax decisions locked
+- [ ] Round 2 — Names/binding/scope/lifetime locked
+- [ ] Round 3 — Primitive and structured types locked
+- [ ] Round 4 — Precedence and associativity locked
+- [ ] Round 5 — Domain-specific construct syntax locked
 - [ ] EBNF grammar drafted
 - [ ] Lexer implemented
 - [ ] Parser implemented
-- [ ] D1 prose drafted
-- [ ] D3 example programs written
-- [ ] Part 1 submitted
+- [ ] D1 prose drafted (§4.1, §4.2, §4.3, §4.6)
+- [ ] D3 example programs written (3 valid + 5 malformed)
+- [ ] D4 AI journal — 4 entries logged
+- [ ] D5 retrospective written
+- [ ] D6 contribution report written
+- [ ] Part 1 submitted on Teams
 
 ---
 
