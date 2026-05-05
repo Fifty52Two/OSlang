@@ -92,6 +92,8 @@ These shape every line of code that follows.
 - [x] **5.3 Statement terminator** — **Semicolon (`;`).** Lexer can ignore whitespace freely; no newline-state to track.
 - [x] **5.4 Assignment operator** — **`<-`.** Visually distinct from comparison `==`, eliminates the classic C-family `=` vs `==` confusion, and gives the language a small originality marker. Comparison operators are the standard C-family set: `==`, `!=`, `<`, `>`, `<=`, `>=`. Note: lexer uses maximal munch when disambiguating `<-` from `<=` from `<`.
 
+---
+
 ### Round 2 — Names, binding, scope, lifetime (Sebesta Ch. 5)
 
 Required by D1 §4.6 (graded section of the Part 1 design spec).
@@ -101,6 +103,8 @@ Required by D1 §4.6 (graded section of the Part 1 design spec).
 - [ ] **5.7 Lifetime of variables** — *not yet decided*
 - [ ] **5.8 When types are bound** — *not yet decided*
 
+---
+
 ### Round 3 — Type system (only what the parser needs)
 
 Full type-system rules are a Part 2 deliverable. For Part 1 we only need to know *which types exist* so the lexer can recognize their keywords and the parser can handle declarations.
@@ -108,6 +112,8 @@ Full type-system rules are a Part 2 deliverable. For Part 1 we only need to know
 - [ ] **5.9 Primitive types** — *not yet decided*
 - [ ] **5.10 Structured type** — *not yet decided*
 - [ ] **5.11 Is Semaphore a primitive or structured type** — *not yet decided*
+
+---
 
 ### Round 4 — Expressions (only what the grammar needs)
 
@@ -117,19 +123,107 @@ Full expression semantics are a Part 2 deliverable. For Part 1 the parser must e
 - [ ] **5.13 Associativity** — *not yet decided*
 - [ ] **5.14 Assignment as statement or expression** — *not yet decided*
 
+---
+
 ### Round 5 — Domain-specific constructs
 
 The exact concrete syntax for each construct. Without this, the grammar can't be written.
 
-- [x] **5.15 Process declaration syntax** — **`process Name(burst: N, priority: N, arrival: N) { body }`**. Closed set of three fields: `burst` (mandatory, int), `priority` (optional, int, default 0), `arrival` (optional, int, default 0). Field order flexible since fields are named. Anything outside this set is a parse error. Fields inside the parameter list use `:` (named-field convention, like JSON / Python kwargs / Rust struct literals); statements inside `{ body }` use `<-` for assignment. Why a closed set: catches typo'd field names at parse time rather than letting them silently do nothing.
-- [x] **5.16 Semaphore declaration syntax** — **`semaphore Name <- N;`**. Initial value `N` is a mandatory non-negative integer. Why `<-` here but `:` in process parameter lists: `<-` is OSlang's operator for **single-target binding** (one name, one value, on its own line) — used for both declarations like this and runtime assignment. `:` is the operator for **named fields inside a multi-field list** — used in process declarations and (later) system declarations. A semaphore declaration is single-target, so it uses `<-`.
-- [x] **5.17 wait/post syntax** — **`wait(s);`** and **`post(s);`**, function-call style, one semaphore argument. `wait(s)` is the P operation: if `s > 0`, decrement and continue; otherwise block the calling process on `s`'s waiting queue. `post(s)` is the V operation: if any process is blocked on `s`, unblock one of them; otherwise increment `s`. Why these names: follows POSIX (`sem_wait`/`sem_post`) which has decades of systems-programming precedent. Chosen over Dijkstra's `wait`/`signal` because `signal` is overloaded with the unrelated C `signal()` UNIX-signal-handler API; chosen over `acquire`/`release` because the lock metaphor doesn't generalize to counting semaphores (e.g. `release(empty)` in producer/consumer reads wrong since nothing was acquired).
-- [x] **5.18 System declaration syntax** — **`system Name(processes: [P1, P2, ...], scheduler: SchedName);`**. Both fields mandatory, order flexible (named fields). Semicolon-terminated, no body block (a system has no code of its own — it just bundles processes with a scheduler). `processes` takes a bracketed comma-separated list of process identifiers; `scheduler` takes a single scheduler identifier referring to a user-declared scheduler instance (see 5.19). Why no body: empty `{}` would be syntactic noise pretending to be structure. Why user-declared scheduler instances rather than built-in scheduler names: consistent with how `processes` works (declare, then reference by name), and lets users define multiple scheduler configurations and reuse them across systems.
-- [ ] **5.19 Scheduler types supported in Part 1** — *not yet decided*
-- [ ] **5.20 run statement syntax** — *not yet decided*
+- [x] **5.15 Process declaration syntax** — **`process Name(burst: N, priority: N, arrival: N) { body }`**.
+  - `burst` — **mandatory**, int. Simulator cannot run without knowing how long a process runs.
+  - `priority` — **optional**, int, default decided in Part 2.
+  - `arrival` — **optional**, int, default `0`. Process is ready from tick 0 if omitted.
+  - Field order is **flexible** — fields are named so order does not matter.
+  - Body is **mandatory** syntactically, but can be empty — parser allows it.
+  - Fields inside `( )` use `:` (named-field convention). Statements inside `{ }` use `<-` for assignment.
+  - Closed field set — any unknown field name is a parse error, catching typos early.
+
+  ```
+  process P1(burst: 3, priority: 2, arrival: 0) {
+      wait(mutex);
+      x <- x + 1;
+      post(mutex);
+  }
+  ```
+
+- [x] **5.16 Semaphore declaration syntax** — **`semaphore Name <- N;`**.
+  - Initial value `N` is a **mandatory** non-negative integer.
+  - Uses `<-` because this is a single-target binding (one name, one value, on its own line) — consistent with variable assignment.
+  - `:` is reserved for named fields inside multi-field lists (process parameters, system parameters).
+
+  ```
+  semaphore mutex <- 1;
+  semaphore empty <- 5;
+  ```
+
+- [x] **5.17 wait/post syntax** — **`wait(s);`** and **`post(s);`**, function-call style, one semaphore argument.
+  - `wait(s)` — P operation: if `s > 0`, decrement and continue; otherwise block the calling process on `s`'s waiting queue.
+  - `post(s)` — V operation: if any process is blocked on `s`, unblock one; otherwise increment `s`.
+  - Why `post` not `signal`: `signal` is overloaded in OS — it also refers to UNIX signal handlers (`SIGINT`, `SIGKILL`), causing ambiguity inside the OS domain itself.
+  - Why `post` not `release`: follows POSIX (`sem_wait` / `sem_post`), well established in systems programming.
+
+  ```
+  wait(mutex);
+  x <- x + 1;
+  post(mutex);
+  ```
+
+- [x] **5.18 System declaration syntax** — **`system Name(processes: [P1, P2, ...], scheduler: SchedType);`**.
+  - `processes` — **mandatory**, bracketed comma-separated list of process identifiers. At least one process required.
+  - `scheduler` — **mandatory**, scheduler type with optional parameters (see 5.19).
+  - Both fields use `:` (named-field convention). Field order flexible.
+  - Semicolon-terminated, no body block — a system has no code of its own.
+  - Processes can be added dynamically after declaration using `Name.add(P, arrival: N)`.
+  - **Dynamic add rule:** if `arrival` in `add` call is less than the process's declared `arrival`, a runtime error is raised. Equal or greater is allowed. (Runtime check — Part 2 concern.)
+  - `run(Name)` starts the simulation. `run(Name, until: N)` stops at clock cycle N.
+
+  ```
+  system Sys1(processes: [P1, P2, P3], scheduler: FCFS);
+  Sys1.add(P4, arrival: 5);
+  run(Sys1);
+  run(Sys1, until: 20);
+  ```
+
+- [x] **5.19 Scheduler types supported** — **Six built-in schedulers.** Schedulers are embedded in the interpreter — users select by name, they do not define scheduling logic.
+
+  | Keyword | Full name | Required attribute |
+  |---|---|---|
+  | `FCFS` | First Come First Served | `arrival` |
+  | `SJF` | Shortest Job First | `burst` |
+  | `SRTF` | Shortest Remaining Time First | `burst` |
+  | `RR` | Round Robin | `quant` on scheduler |
+  | `PRIORITY` | Priority Scheduling | `priority` |
+  | `MLFQ` | Multi Level Feedback Queue | `quant`, scheduler params |
+
+  - Schedulers that need parameters use function-call style: `RR(quant: 2)`, `MLFQ(queues: 3, quant: 2)`.
+  - Schedulers with no parameters use bare name: `FCFS`, `SJF`, `SRTF`, `PRIORITY`.
+  - Detailed scheduler attributes deferred to Part 2.
+
+  ```
+  system Sys1(processes: [P1, P2], scheduler: FCFS);
+  system Sys2(processes: [P1, P2], scheduler: RR(quant: 2));
+  system Sys3(processes: [P1, P2], scheduler: PRIORITY);
+  system Sys4(processes: [P1, P2], scheduler: SJF);
+  system Sys5(processes: [P1, P2], scheduler: SRTF);
+  system Sys6(processes: [P1, P2], scheduler: MLFQ(queues: 3, quant: 2));
+  ```
+
+- [x] **5.20 run statement syntax** — **`run(Name);`** or **`run(Name, until: N);`**.
+  - System name — **mandatory**.
+  - `until: N` — **optional**. Stops simulation at clock cycle N.
+  - If `until` is omitted, simulation runs until all processes finish. A safe maximum tick limit is applied by the interpreter to prevent infinite loops in deadlock scenarios (exact value decided in Part 2).
+  - Why `until` not `ticks`: reads as natural English — "run until cycle 20" — and avoids confusion with process `burst` which is also measured in ticks.
+
+  ```
+  run(Sys1);              // runs until all processes finish
+  run(Sys1, until: 20);   // stops at clock cycle 20
+  ```
+
 - [ ] **5.21 User-defined functions** — *not yet decided*
 - [ ] **5.22 Output commands** — *not yet decided*
 - [ ] **5.23 Control flow constructs** — *not yet decided*
+
+---
 
 ### Round 6 — Grammar
 
@@ -149,15 +243,43 @@ These are required for the final D1 spec (due 22 May) and the type checker / int
 - Parameter-passing mode
 - Operational semantics for two constructs
 - Design rationale paragraphs (D1 §4.8)
+- Default value for `priority` when omitted
+- Safe maximum tick limit for `run` without `until`
+- Detailed scheduler attributes (MLFQ queues, RR quantum behavior, etc.)
+- Runtime error details for `add` arrival violation
 
 ---
 
 ## 6. Example program
 
-*Placeholder. A representative example program will be added once the syntax decisions in Round 5 are locked.*
-
 ```
-// Example program goes here once syntax is locked.
+// Semaphore declarations
+semaphore mutex <- 1;
+semaphore empty <- 5;
+semaphore full <- 0;
+
+// Process declarations
+process Producer(burst: 3, priority: 2, arrival: 0) {
+    wait(empty);
+    wait(mutex);
+    x <- x + 1;
+    post(mutex);
+    post(full);
+}
+
+process Consumer(burst: 3, priority: 1, arrival: 1) {
+    wait(full);
+    wait(mutex);
+    x <- x - 1;
+    post(mutex);
+    post(empty);
+}
+
+// System declaration
+system Sys1(processes: [Producer, Consumer], scheduler: RR(quant: 2));
+
+// Run simulation
+run(Sys1, until: 20);
 ```
 
 ---
@@ -173,7 +295,7 @@ These are required for the final D1 spec (due 22 May) and the type checker / int
 - [ ] Round 2 — Names/binding/scope/lifetime locked
 - [ ] Round 3 — Primitive and structured types locked
 - [ ] Round 4 — Precedence and associativity locked
-- [ ] Round 5 — Domain-specific construct syntax locked
+- [~] Round 5 — Domain-specific construct syntax (5.15–5.20 locked, 5.21–5.23 remaining)
 - [ ] EBNF grammar drafted
 - [ ] Lexer implemented
 - [ ] Parser implemented
