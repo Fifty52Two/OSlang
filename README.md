@@ -277,7 +277,7 @@ Decisions are organized by **Part 1 (due 8 May)** and **Part 2 (due 22 May)**. W
 - Design rationale paragraphs (D1 §4.8)
 - Default value for `priority` when omitted
 - Safe maximum tick limit for `run` without `until`
-- Detailed scheduler attributes (MLFQ queues, RR quantum behavior, etc.)
+- Detailed scheduler attributes (RR quantum behavior, etc.)
 - Runtime error details for `add` arrival violation
 
 ---
