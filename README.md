@@ -217,9 +217,39 @@ This section is filled in as decisions are locked. Each decision will record: th
 
 ### Round 4 — Expressions (only what the grammar needs)
 
-- [ ] **5.12 Operator precedence** — *not yet decided*
-- [ ] **5.13 Associativity** — *not yet decided*
-- [ ] **5.14 Assignment as statement or expression** — *not yet decided*
+- [x] **5.12 Operator precedence** — Standard C/Java convention (Sebesta §7.3).
+
+  | Level | Operators | Description |
+  |---|---|---|
+  | 1 (highest) | `!` `-` (unary) | Unary operators |
+  | 2 | `*` `/` `%` | Multiplicative |
+  | 3 | `+` `-` | Additive |
+  | 4 | `<` `>` `<=` `>=` | Relational |
+  | 5 | `==` `!=` | Equality |
+  | 6 | `&&` | Logical AND |
+  | 7 | `\|\|` | Logical OR |
+  | 8 (lowest) | `<-` | Assignment |
+
+- [x] **5.13 Associativity** — All binary operators left-associative. Unary operators right-associative.
+
+  ```
+  5 - 3 - 1       // (5 - 3) - 1 = 1
+  10 / 2 / 5      // (10 / 2) / 5 = 1
+  a && b && c     // (a && b) && c
+  !!x             // !(!x) — right to left
+  ```
+
+  Exam justification: left-associativity matches mathematical convention and Java/C standard (Sebesta §7.3).
+
+- [x] **5.14 Assignment as statement or expression** — **Statement only. Never an expression.**
+
+  ```
+  x <- 5;           // OK — standalone statement
+  y <- x <- 5;      // ERROR — chained assignment not allowed
+  if (x <- 5) { }   // ERROR — assignment inside condition not allowed
+  ```
+
+  Exam justification: assignment as statement only improves reliability (Sebesta §7.7) — eliminates accidental assignment-in-condition bugs, consistent with our choice of `<-` over `=` for clarity.
 
 ---
 
@@ -448,7 +478,7 @@ run(Sys1, until: 20);
 - [x] Round 1 — Core syntax decisions locked
 - [x] Round 2 — Names/binding/scope/lifetime locked
 - [x] Round 3 — Type system locked
-- [ ] Round 4 — Precedence and associativity locked
+- [x] Round 4 — Precedence and associativity locked
 - [x] Round 5 — Domain-specific construct syntax locked
 - [ ] Round 6 — EBNF grammar drafted
 - [ ] Lexer implemented
