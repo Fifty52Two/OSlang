@@ -77,8 +77,6 @@ Deliverables per part:
 
 This section is filled in as decisions are locked. Each decision will record: the choice made, the one-sentence reason, and the rough Sebesta chapter it relates to. Detailed rationale (for D1 §4.8) will be written separately in our own voice.
 
-Decisions are organized by **Part 1 (due 8 May)** and **Part 2 (due 22 May)**. We are currently focused on Part 1. Part 2 decisions are listed at the end of this section for reference but will be addressed after the Part 1 deadline.
-
 ---
 
 ## PART 1 — Decisions required by 8 May
@@ -86,24 +84,94 @@ Decisions are organized by **Part 1 (due 8 May)** and **Part 2 (due 22 May)**. W
 ### Round 1 — Core syntax decisions
 
 - [x] **5.1 Implementation language** — **Java.** Clean class hierarchy for AST nodes; garbage collection removes a class of bugs that would otherwise compete for attention with the language-design work.
+
 - [x] **5.2 Surface syntax style** — **C-family with curly braces.** Block structure is immediately visible; matches the implementation language's mental model; lexer doesn't need indentation tracking.
+
 - [x] **5.3 Statement terminator** — **Semicolon (`;`).** Lexer can ignore whitespace freely; no newline-state to track.
+
 - [x] **5.4 Assignment operator** — **`<-`.** Visually distinct from comparison `==`, eliminates the classic C-family `=` vs `==` confusion. Comparison operators: `==`, `!=`, `<`, `>`, `<=`, `>=`. Lexer uses maximal munch when disambiguating `<-` from `<=` from `<`.
 
 ---
 
 ### Round 2 — Names, binding, scope, lifetime (Sebesta Ch. 5)
 
-- [ ] **5.5 Identifier rules** — *not yet decided*
-- [ ] **5.6 Static or dynamic scoping** — *not yet decided*
-- [ ] **5.7 Lifetime of variables** — *not yet decided*
-- [ ] **5.8 When types are bound** — *not yet decided*
+- [x] **5.5 Identifier rules** — Letters, digits, underscore. Must start with a latin letter, must end with a letter or digit. Case insensitive.
+
+  Pattern:
+  ```
+  [a-zA-Z][a-zA-Z0-9_]*[a-zA-Z0-9]   // length > 1
+  [a-zA-Z]                             // length 1 is also valid
+  ```
+
+  | Identifier | Legal? |
+  |---|---|
+  | `producer` | ✅ |
+  | `P1` | ✅ |
+  | `my_process` | ✅ |
+  | `x` | ✅ |
+  | `my_process_1` | ✅ |
+  | `_internal` | ❌ starts with underscore |
+  | `1process` | ❌ starts with digit |
+  | `my_process_` | ❌ ends with underscore |
+  | `my-process` | ❌ hyphen not allowed |
+
+- [x] **5.6 Scoping** — **Static (lexical) scoping.**
+  - Variable lookup is resolved at compile time based on source code structure.
+  - Each process body has its own local scope.
+  - Functions have their own local scope.
+  - Global scope holds semaphore declarations, process declarations, function declarations, system declarations.
+  - A process cannot see variables declared inside another process.
+  - Exam justification: Sebesta §5.5 — static scoping is predictable, debuggable, and used by all modern languages.
+
+- [x] **5.7 Lifetime of variables** — **Stack-dynamic for locals, static for globals. No heap-dynamic.**
+
+  | Variable type | Lifetime | Declaration |
+  |---|---|---|
+  | Local variables in process body | Stack-dynamic | `int x <- 0;` inside process |
+  | Local variables in functions | Stack-dynamic | `int x <- 0;` inside func |
+  | Static variables | Static | `static int counter <- 0;` at top level |
+  | Semaphore declarations | Static | `semaphore mutex <- 1;` — implicitly static |
+  | Process declarations | Static | `process P1(...) { }` — implicitly static |
+
+  No heap-dynamic — explicitly excluded. No memory management in scope.
+
+  ```
+  static int counter <- 0;
+  semaphore mutex <- 1;
+
+  process Producer(burst: 3) {
+      int temp <- 0;
+      temp <- temp + 1;
+      counter <- counter + 1;
+      post(mutex);
+  }
+  ```
+
+- [x] **5.8 Type binding** — **Static binding.** Types are bound at declaration and never change.
+
+  Coercion rules:
+
+  | Expression | Result | Rule |
+  |---|---|---|
+  | `int + int` | `int` | no coercion |
+  | `float + float` | `float` | no coercion |
+  | `int + float` | `float` | int widened to float — no data loss |
+  | `float + int` | `float` | int widened to float — no data loss |
+  | `float` assigned to `int` variable | ❌ | compile time error — narrowing not allowed |
+
+  ```
+  int x <- 5;
+  float y <- 3.14;
+
+  float result <- x + y;   // OK — x widened to float, result is 8.14
+  x <- x + y;              // ERROR — cannot assign float to int variable
+  ```
 
 ---
 
 ### Round 3 — Type system (only what the parser needs)
 
-- [x] **5.9 Primitive types** — **`int`, `float`, `bool`, `string`.** Four primitive types. Domain types `semaphore` and `process` are also valid as parameter types in user-defined functions.
+- [x] **5.9 Primitive types** — **`int`, `float`, `bool`, `string`, `semaphore`.** Domain types `semaphore` and `process` are also valid as parameter types in user-defined functions.
 
   | Type | Example values |
   |---|---|
@@ -111,11 +179,39 @@ Decisions are organized by **Part 1 (due 8 May)** and **Part 2 (due 22 May)**. W
   | `float` | `3.14`, `0.5` |
   | `bool` | `true`, `false` |
   | `string` | `"hello"`, `"done"` |
-  | `semaphore` | valid as function parameter type only |
-  | `process` | valid as function parameter type only |
+  | `semaphore` | primitive — `semaphore mutex <- 1;` |
 
-- [ ] **5.10 Structured type** — *not yet decided*
-- [ ] **5.11 Is Semaphore a primitive or structured type** — *not yet decided*
+- [x] **5.10 Structured type** — **`enum` with implicit int coercion.**
+
+  ```
+  enum State {
+      ready,      // 0
+      running,    // 1
+      blocked,    // 2
+      finished    // 3
+  }
+
+  State s <- ready;    // s is ready (0)
+  int x <- blocked;    // x gets 2 — enum to int coercion
+  State t <- 1;        // t gets running — int to enum coercion
+  ```
+
+  | Coercion | Allowed |
+  |---|---|
+  | `enum` → `int` | ✅ implicit |
+  | `int` → `enum` | ✅ implicit |
+  | `enum` → `float` | ❌ not allowed |
+  | `float` → `enum` | ❌ not allowed |
+
+  Exam justification: enum-int coercion follows C convention (Sebesta §6.11). Enums are structured types with an underlying integer representation — distinct from primitive-to-primitive coercion rules.
+
+- [x] **5.11 Type categories** — Three categories: primitive, built-in structured, user-defined structured.
+
+  | Type category | Types | User can define new? |
+  |---|---|---|
+  | Primitive | `int`, `float`, `bool`, `string`, `semaphore` | ❌ built-in |
+  | Built-in structured | `process`, `system` | ❌ fixed rules, just declare instances |
+  | User-defined structured | `enum` | ✅ user defines |
 
 ---
 
@@ -129,7 +225,7 @@ Decisions are organized by **Part 1 (due 8 May)** and **Part 2 (due 22 May)**. W
 
 ### Round 5 — Domain-specific constructs
 
-- [x] **5.15 Process declaration syntax** — **`process Name(burst: N, priority: N, arrival: N) { body }`**.
+- [x] **5.15 Process declaration syntax** — **`process Name(burst: N, priority: N, arrival: N) { body }`**
   - `burst` — **mandatory**, int.
   - `priority` — **optional**, int, default decided in Part 2.
   - `arrival` — **optional**, int, default `0`.
@@ -145,7 +241,7 @@ Decisions are organized by **Part 1 (due 8 May)** and **Part 2 (due 22 May)**. W
   }
   ```
 
-- [x] **5.16 Semaphore declaration syntax** — **`semaphore Name <- N;`**.
+- [x] **5.16 Semaphore declaration syntax** — **`semaphore Name <- N;`**
   - Initial value `N` — **mandatory**, non-negative integer.
   - Uses `<-` — single-target binding, consistent with variable assignment.
 
@@ -165,7 +261,7 @@ Decisions are organized by **Part 1 (due 8 May)** and **Part 2 (due 22 May)**. W
   post(mutex);
   ```
 
-- [x] **5.18 System declaration syntax** — **`system Name(processes: [P1, P2, ...], scheduler: SchedType);`**.
+- [x] **5.18 System declaration syntax** — **`system Name(processes: [P1, P2, ...], scheduler: SchedType);`**
   - `processes` — **mandatory**, at least one process.
   - `scheduler` — **mandatory**.
   - Dynamic add: `Name.add(P, arrival: N)` — runtime error if add arrival < process declared arrival.
@@ -191,7 +287,13 @@ Decisions are organized by **Part 1 (due 8 May)** and **Part 2 (due 22 May)**. W
   - With parameters: `RR(quant: 2)`, `MLFQ(queues: 3, quant: 2)`.
   - Without parameters: `FCFS`, `SJF`, `SRTF`, `PRIORITY`.
 
-- [x] **5.20 run statement syntax** — **`run(Name);`** or **`run(Name, until: N);`**.
+  ```
+  system Sys1(processes: [P1, P2], scheduler: FCFS);
+  system Sys2(processes: [P1, P2], scheduler: RR(quant: 2));
+  system Sys3(processes: [P1, P2], scheduler: MLFQ(queues: 3, quant: 2));
+  ```
+
+- [x] **5.20 run statement syntax** — **`run(Name);`** or **`run(Name, until: N);`**
   - `until: N` — optional, stops at clock cycle N.
   - Without `until` — runs until all processes finish, safe max limit decided in Part 2.
   - Why `until` not `ticks`: reads as natural English, avoids confusion with process `burst`.
@@ -201,7 +303,7 @@ Decisions are organized by **Part 1 (due 8 May)** and **Part 2 (due 22 May)**. W
   run(Sys1, until: 20);
   ```
 
-- [x] **5.21 User-defined functions** — **`func Name(param: type, ...) -> returnType { body }`**.
+- [x] **5.21 User-defined functions** — **`func Name(param: type, ...) -> returnType { body }`**
   - Keyword: `func`.
   - Parameters: explicit types, named with `:` convention.
   - Valid parameter types: `int`, `float`, `bool`, `string`, `semaphore`, `process`.
@@ -241,22 +343,25 @@ Decisions are organized by **Part 1 (due 8 May)** and **Part 2 (due 22 May)**. W
   print(mutex);
   ```
 
-- [x] **5.23 Control flow constructs** — **`if, elif, else, while`**,
-    - conditional
-    ```
-        if (x > 0) {
-            print(x);
-        } elif (x == 0) {
-            print("zero");
-        } else {
-            print("negative");
-        }
+- [x] **5.23 Control flow constructs** — **`if` / `elif` / `else`** and **`while`**.
+  - `elif` and `else` are optional.
+  - Parentheses required around conditions.
+  - `while` for condition-based loops — chosen over `for` to avoid requiring `for-each`.
 
-        // loop
-        while (x > 0) {
-            x <- x - 1;
-        }
-    ```
+  ```
+  if (x > 0) {
+      print(x);
+  } elif (x == 0) {
+      print("zero");
+  } else {
+      print("negative");
+  }
+
+  while (x > 0) {
+      x <- x - 1;
+  }
+  ```
+
 ---
 
 ### Round 6 — Grammar
@@ -277,18 +382,30 @@ Decisions are organized by **Part 1 (due 8 May)** and **Part 2 (due 22 May)**. W
 - Design rationale paragraphs (D1 §4.8)
 - Default value for `priority` when omitted
 - Safe maximum tick limit for `run` without `until`
-- Detailed scheduler attributes (RR quantum behavior, etc.)
+- Detailed scheduler attributes (RR quantum behavior, MLFQ queues, etc.)
 - Runtime error details for `add` arrival violation
+- `print(s)` output format for enum — prints int value or name?
 
 ---
 
 ## 6. Example program
 
 ```
+// Static variable
+static int counter <- 0;
+
 // Semaphore declarations
 semaphore mutex <- 1;
 semaphore empty <- 5;
 semaphore full <- 0;
+
+// Enum declaration
+enum State {
+    ready,
+    running,
+    blocked,
+    finished
+}
 
 // User-defined function
 func isBlocked(p: process) -> bool {
@@ -299,7 +416,7 @@ func isBlocked(p: process) -> bool {
 process Producer(burst: 3, priority: 2, arrival: 0) {
     wait(empty);
     wait(mutex);
-    x <- x + 1;
+    counter <- counter + 1;
     post(mutex);
     post(full);
 }
@@ -307,7 +424,7 @@ process Producer(burst: 3, priority: 2, arrival: 0) {
 process Consumer(burst: 3, priority: 1, arrival: 1) {
     wait(full);
     wait(mutex);
-    x <- x - 1;
+    counter <- counter - 1;
     post(mutex);
     post(empty);
 }
@@ -329,11 +446,11 @@ run(Sys1, until: 20);
 - [x] Pair confirmed
 - [x] Hard scope limits agreed
 - [x] Round 1 — Core syntax decisions locked
-- [ ] Round 2 — Names/binding/scope/lifetime locked
-- [~] Round 3 — Primitive types locked (5.9 done, 5.10–5.11 remaining)
+- [x] Round 2 — Names/binding/scope/lifetime locked
+- [x] Round 3 — Type system locked
 - [ ] Round 4 — Precedence and associativity locked
-- [~] Round 5 — Domain constructs (5.15–5.22 locked, 5.23 remaining)
-- [ ] EBNF grammar drafted
+- [x] Round 5 — Domain-specific construct syntax locked
+- [ ] Round 6 — EBNF grammar drafted
 - [ ] Lexer implemented
 - [ ] Parser implemented
 - [ ] D1 prose drafted (§4.1, §4.2, §4.3, §4.6)
