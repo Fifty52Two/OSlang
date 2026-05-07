@@ -95,7 +95,7 @@ This section is filled in as decisions are locked. Each decision will record: th
 
 ### Round 2 — Names, binding, scope, lifetime (Sebesta Ch. 5)
 
-- [x] **5.5 Identifier rules** — Letters, digits, underscore. Must start with a latin letter, must end with a letter or digit. Case insensitive.
+- [x] **5.5 Identifier rules** — Letters, digits, underscore. Must start with a latin letter, must end with a letter or digit. **Case-sensitive** — `Producer` and `producer` are distinct identifiers.
 
   Pattern:
   ```
@@ -106,6 +106,7 @@ This section is filled in as decisions are locked. Each decision will record: th
   | Identifier | Legal? |
   |---|---|
   | `producer` | ✅ |
+  | `Producer` | ✅ — distinct from `producer` |
   | `P1` | ✅ |
   | `my_process` | ✅ |
   | `x` | ✅ |
@@ -114,6 +115,8 @@ This section is filled in as decisions are locked. Each decision will record: th
   | `1process` | ❌ starts with digit |
   | `my_process_` | ❌ ends with underscore |
   | `my-process` | ❌ hyphen not allowed |
+
+  Exam justification: case-sensitivity follows the C-family tradition (Java, C, C#) we have already committed to with curly-brace syntax (5.2) and aligns with Sebesta §5.2's note that modern languages favor case-sensitive identifiers because predefined names use mixed case.
 
 - [x] **5.6 Scoping** — **Static (lexical) scoping.**
   - Variable lookup is resolved at compile time based on source code structure.
@@ -182,6 +185,23 @@ This section is filled in as decisions are locked. Each decision will record: th
   | `semaphore` | primitive — `semaphore mutex <- 1;` |
 
 - [x] **5.10 Structured type** — **`enum` with implicit int coercion.**
+
+  **Enum declaration syntax:**
+  ```
+  enum Name {
+      member1,
+      member2,
+      member3
+  }
+  ```
+
+  - `enum` keyword, then a name, then a brace-delimited list of comma-separated member identifiers.
+  - Each member is implicitly assigned a non-negative integer starting from `0` in declaration order.
+  - At least one member is required.
+  - Trailing comma after the last member is **not** allowed.
+  - The enum name and member names follow the standard identifier rules (5.5) and are case-sensitive.
+  - Enum declarations are top-level only — they cannot appear inside process or function bodies.
+  - Member names live in the global namespace — collisions with other identifiers are a compile-time error.
 
   ```
   enum State {
@@ -303,7 +323,7 @@ This section is filled in as decisions are locked. Each decision will record: th
   run(Sys1, until: 20);
   ```
 
-- [x] **5.19 Scheduler types supported** — **Six built-in schedulers**, embedded in interpreter.
+- [x] **5.19 Scheduler types supported** — **Five built-in schedulers**, embedded in interpreter.
 
   | Keyword | Full name |
   |---|---|
@@ -312,15 +332,14 @@ This section is filled in as decisions are locked. Each decision will record: th
   | `SRTF` | Shortest Remaining Time First |
   | `RR` | Round Robin |
   | `PRIORITY` | Priority Scheduling |
-  | `MLFQ` | Multi Level Feedback Queue |
 
-  - With parameters: `RR(quant: 2)`, `MLFQ(queues: 3, quant: 2)`.
+  - With parameters: `RR(quant: 2)`.
   - Without parameters: `FCFS`, `SJF`, `SRTF`, `PRIORITY`.
 
   ```
   system Sys1(processes: [P1, P2], scheduler: FCFS);
   system Sys2(processes: [P1, P2], scheduler: RR(quant: 2));
-  system Sys3(processes: [P1, P2], scheduler: MLFQ(queues: 3, quant: 2));
+  system Sys3(processes: [P1, P2], scheduler: PRIORITY);
   ```
 
 - [x] **5.20 run statement syntax** — **`run(Name);`** or **`run(Name, until: N);`**
@@ -412,7 +431,7 @@ This section is filled in as decisions are locked. Each decision will record: th
 - Design rationale paragraphs (D1 §4.8)
 - Default value for `priority` when omitted
 - Safe maximum tick limit for `run` without `until`
-- Detailed scheduler attributes (RR quantum behavior, MLFQ queues, etc.)
+- Detailed scheduler attributes (RR quantum behavior, etc.)
 - Runtime error details for `add` arrival violation
 - `print(s)` output format for enum — prints int value or name?
 
