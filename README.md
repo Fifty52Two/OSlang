@@ -312,8 +312,9 @@ This section is filled in as decisions are locked. Each decision will record: th
   ```
 
 - [x] **5.18 System declaration syntax** — **`system Name(processes: [P1, P2, ...], scheduler: SchedType);`**
-  - `processes` — **mandatory**, at least one process.
+  - `processes` — **mandatory**, at least one process. Empty `processes: []` is a parse error (a processless system has nothing to simulate).
   - `scheduler` — **mandatory**.
+  - **Field order is fixed:** `processes` first, then `scheduler`. This differs from `process_decl` (§5.15) where field order is flexible. Rationale: a system declaration is a top-level configuration, so a uniform shape across the codebase is more important than writing flexibility (Sebesta §1.3.3 — readability favoured over writability for declarative configuration).
   - Dynamic add: `Name.add(P, arrival: N)` — runtime error if add arrival < process declared arrival.
   - `run(Name)` or `run(Name, until: N)` starts simulation.
 
@@ -323,18 +324,19 @@ This section is filled in as decisions are locked. Each decision will record: th
   run(Sys1, until: 20);
   ```
 
-- [x] **5.19 Scheduler types supported** — **Five built-in schedulers**, embedded in interpreter.
+- [x] **5.19 Scheduler types supported** — **Five built-in schedulers**, reserved keywords (users cannot name a variable `FCFS`, `RR`, etc.).
 
-  | Keyword | Full name |
-  |---|---|
-  | `FCFS` | First Come First Served |
-  | `SJF` | Shortest Job First |
-  | `SRTF` | Shortest Remaining Time First |
-  | `RR` | Round Robin |
-  | `PRIORITY` | Priority Scheduling |
+  | Keyword | Full name | Parameters |
+  |---|---|---|
+  | `FCFS` | First Come First Served | none |
+  | `SJF` | Shortest Job First | none |
+  | `SRTF` | Shortest Remaining Time First | none |
+  | `RR` | Round Robin | `quant: INT_LIT` (mandatory) |
+  | `PRIORITY` | Priority Scheduling (non-preemptive) | none |
 
-  - With parameters: `RR(quant: 2)`.
-  - Without parameters: `FCFS`, `SJF`, `SRTF`, `PRIORITY`.
+  Only `RR` takes a parameter, because round-robin is undefined without a quantum. The other schedulers have no tunable knob in their textbook definition. `PRIORITY` is fixed as **non-preemptive** in OSlang — once a process starts, it runs to completion, even if a higher-priority process arrives later. This is a deliberate language-level decision rather than a per-system flag.
+
+  `quant` accepts an **integer literal only** (not a general expression). Rationale: the quantum is a static configuration parameter, conceptually constant per system, not a value the program computes. Allowing arbitrary expressions would suggest dynamic schedulers, which OSlang doesn't have. Sign and magnitude (`quant > 0`) are checked by the type checker — EBNF cannot express them.
 
   ```
   system Sys1(processes: [P1, P2], scheduler: FCFS);
@@ -355,10 +357,12 @@ This section is filled in as decisions are locked. Each decision will record: th
 - [x] **5.21 User-defined functions** — **`func Name(param: type, ...) -> returnType { body }`**
   - Keyword: `func`.
   - Parameters: explicit types, named with `:` convention.
-  - Valid parameter types: `int`, `float`, `bool`, `string`, `semaphore`, `process`.
+  - Valid parameter types: `int`, `float`, `bool`, `string`, `semaphore`, `process`. Enum types are **not** first-class — to pass an enum value, declare the parameter as `int` and rely on the enum↔int coercion rules from §5.10.
+  - Valid return types: `int`, `float`, `bool`, `string`. Returning a `semaphore` or `process` reference is not allowed.
   - Return type: explicit, after `->`.
   - Return statement: `return` keyword.
   - Top level only — no nested functions.
+  - Empty parameter list is allowed: `func tick() -> int { ... }`.
   - Body can call `wait`, `post`, `print` and access `p.state`, `p.burst` etc.
 
   ```
@@ -415,7 +419,241 @@ This section is filled in as decisions are locked. Each decision will record: th
 
 ### Round 6 — Grammar
 
-- [ ] **5.24 EBNF grammar** — *to be written after Rounds 1–5 are locked*
+- [ ] **5.24 EBNF grammar** — *being drafted step by step. EBNF metasymbols follow Sebesta §3.3.2: `[ ]` optional, `{ }` zero-or-more repetition, `( ... | ... )` grouped alternatives. Where braces are used to express left-associative operator chains, associativity is not implied by the grammar itself (Sebesta §3.3.2, p.127) — it is enforced by the parser, consistent with our decision in §5.13.*
+
+  **Step 1 — Top-level structure (LOCKED)**
+
+  A program is one or more top-level items. An empty source file is a syntax error — every OSlang program must contain at least one declaration or executable statement. Ordering between declarations and executable statements (e.g., `run` after declarations) is a semantic concern handled by the type checker, not the grammar.
+
+  ```
+  <program>        ::= <top_level_decl> { <top_level_decl> }
+
+  <top_level_decl> ::= <static_decl>
+                     | <semaphore_decl>
+                     | <enum_decl>
+                     | <process_decl>
+                     | <func_decl>
+                     | <system_decl>
+                     | <add_stmt>
+                     | <run_stmt>
+  ```
+
+  **Step 2 — Declarations (in progress)**
+
+  Type rules — three context-specific type categories. This refines §5.9 / §5.21: enum types are NOT first-class types in the grammar — enum-typed values are passed as `int` and rely on the enum↔int coercion rules from §5.10. So `func nextState(s: State) -> State` is not legal; `func nextState(s: int) -> int` is.
+
+  ```
+  <simple_type>    ::= "int" | "float" | "bool" | "string"
+
+  <param_type>     ::= <simple_type> | "semaphore" | "process"
+
+  <return_type>    ::= <simple_type>
+  ```
+
+  `static_decl` and `semaphore_decl` — initial value is any expression at the grammar level; type/sign constraints (e.g., semaphore initial value must be a non-negative int) are checked by the type checker.
+
+  ```
+  <static_decl>    ::= "static" <simple_type> IDENT "<-" <expr> ";"
+
+  <semaphore_decl> ::= "semaphore" IDENT "<-" <expr> ";"
+  ```
+
+  `enum_decl` — at least one member; trailing comma not allowed; no semicolon after `}`.
+
+  ```
+  <enum_decl>      ::= "enum" IDENT "{" <enum_members> "}"
+
+  <enum_members>   ::= IDENT { "," IDENT }
+  ```
+
+  `process_decl` header — closed field set encoded in the grammar (unknown field names are a parse error per §5.15). Three constraints are deferred to the type checker because EBNF cannot express them: `burst` mandatory, no duplicate fields, positive integer values.
+
+  ```
+  <process_decl>       ::= "process" IDENT "(" <process_fields> ")" <block>
+
+  <process_fields>     ::= <process_field> { "," <process_field> }
+
+  <process_field>      ::= <process_field_name> ":" <expr>
+
+  <process_field_name> ::= "burst" | "priority" | "arrival"
+  ```
+
+  `func_decl` header — empty parameter list allowed; return type mandatory.
+
+  ```
+  <func_decl>      ::= "func" IDENT "(" [ <param_list> ] ")" "->" <return_type> <block>
+
+  <param_list>     ::= <param> { "," <param> }
+
+  <param>          ::= IDENT ":" <param_type>
+  ```
+
+  `system_decl` — fixed field order (`processes` then `scheduler`); both fields mandatory; at least one process; scheduler names are reserved keywords. Fixing the order makes the grammar enforce all four constraints with no work left for the type checker — a real win compared to `process_decl` where flexible order forced us to defer checks.
+
+  ```
+  <system_decl>    ::= "system" IDENT "(" "processes" ":" "[" <process_list> "]"
+                                          "," "scheduler" ":" <scheduler>
+                                      ")" ";"
+
+  <process_list>   ::= IDENT { "," IDENT }
+
+  <scheduler>      ::= "FCFS"
+                     | "SJF"
+                     | "SRTF"
+                     | "PRIORITY"
+                     | "RR" "(" "quant" ":" INT_LIT ")"
+  ```
+
+  **Step 2 — Declarations (LOCKED)**
+
+  **Step 3 — Expressions (LOCKED)**
+
+  Bottom-up precedence cascade following §5.12 — lowest precedence (outermost) first, highest precedence (innermost) last. Sebesta §3.3.2 (p.127) note: `{ }` repetition does NOT encode left-associativity; the parser folds left per our §5.13 decision. Unary right-associativity (`!!x` parses as `!(!x)`) is encoded by `<unary_expr>` recursing on itself.
+
+  ```
+  <expr>                ::= <or_expr>
+
+  <or_expr>             ::= <and_expr> { "||" <and_expr> }
+
+  <and_expr>            ::= <equality_expr> { "&&" <equality_expr> }
+
+  <equality_expr>       ::= <relational_expr> { ( "==" | "!=" ) <relational_expr> }
+
+  <relational_expr>     ::= <additive_expr> { ( "<" | ">" | "<=" | ">=" ) <additive_expr> }
+
+  <additive_expr>       ::= <multiplicative_expr> { ( "+" | "-" ) <multiplicative_expr> }
+
+  <multiplicative_expr> ::= <unary_expr> { ( "*" | "/" | "%" ) <unary_expr> }
+
+  <unary_expr>          ::= ( "!" | "-" ) <unary_expr>
+                          | <postfix_expr>
+
+  <postfix_expr>        ::= <primary> [ "." <process_attr> ]
+
+  <process_attr>        ::= "state" | "burst" | "priority" | "arrival"
+
+  <primary>             ::= <literal>
+                          | IDENT [ "(" [ <arg_list> ] ")" ]
+                          | "(" <expr> ")"
+
+  <arg_list>            ::= <expr> { "," <expr> }
+
+  <literal>             ::= INT_LIT | FLOAT_LIT | BOOL_LIT | STRING_LIT
+  ```
+
+  Decisions baked into this:
+  - **Numeric literals are unsigned at the token level.** `INT_LIT` is digits only (e.g. `42`); negatives are formed by the unary `-` operator. `FLOAT_LIT` requires digits on both sides of the dot (e.g. `3.14`, `0.5`) — never `.5` or `5.`. This avoids ambiguity with the `.` in `p.state` and keeps the lexer simple.
+  - **Function calls are merged into `<primary>`.** A bare `IDENT` is a variable reference; `IDENT(...)` is a function call. Same parse path until the parser sees `(`.
+  - **`wait`, `post`, `print` are not special in the grammar.** They are ordinary function calls; the language defines them as built-in. The "this name is a built-in, not a user-defined function" check is a semantic concern.
+  - **Postfix dot-access is one level deep, closed attribute set.** Only `state`, `burst`, `priority`, `arrival` follow a `.`. Anything else is a parse error. `a.b.c` does not parse. There are no general method calls — `Sys1.add(...)` is a separate top-level statement form, not an instance of method-call syntax.
+
+  **Step 4 — Statements (LOCKED)**
+
+  A `<block>` is a brace-enclosed sequence of zero or more statements (matches §5.15 — process bodies are mandatory syntactically but can be empty). Statements come in six kinds.
+
+  ```
+  <block>          ::= "{" { <statement> } "}"
+
+  <statement>      ::= <var_decl_stmt>
+                     | <assign_stmt>
+                     | <call_stmt>
+                     | <if_stmt>
+                     | <while_stmt>
+                     | <return_stmt>
+
+  <var_decl_stmt>  ::= <simple_type> IDENT "<-" <expr> ";"
+
+  <assign_stmt>    ::= IDENT "<-" <expr> ";"
+
+  <call_stmt>      ::= IDENT "(" [ <arg_list> ] ")" ";"
+
+  <return_stmt>    ::= "return" <expr> ";"
+
+  <while_stmt>     ::= "while" "(" <expr> ")" <block>
+
+  <if_stmt>        ::= "if" "(" <expr> ")" <block>
+                       { "elif" "(" <expr> ")" <block> }
+                       [ "else" <block> ]
+  ```
+
+  Decisions baked into this:
+  - **Local variable declarations require an initializer.** `int x;` does not parse; `int x <- 0;` does. Sebesta §5.4.2 (reliability argument against implicit/incomplete declarations) and §5.4.3.2 (initialization is part of stack-dynamic elaboration) both support this. Modern precedent: C# `var`, Rust `let` (with caveats), Kotlin `val`/`var` with explicit initializers.
+  - **Assignment, function-call-as-statement, and expressions are syntactically distinct rules.** This implements §5.14 ("assignment is a statement only, never an expression") at the grammar level rather than after parsing. Defense: Sebesta §7.7.5 documents the bugs that arise when assignment is treated as an expression (the classic `if (x = y)` typo). Keeping these as separate productions makes the design decision visible in the grammar.
+  - **`return` always carries an expression.** No bare `return;`. Because §5.21 declares every function has a non-void return type, a bare `return;` would syntactically permit a function to violate its own type signature.
+  - **Dangling-else does not arise.** Sebesta §3.3.1.4 shows the canonical if-else ambiguity for languages where statements after `if`/`else` can be bare. OSlang sidesteps this entirely: every branch body is a mandatory `<block>` (always braced). No `<matched>`/`<unmatched>` non-terminal split is needed. Same approach as Swift, Rust, Go.
+  - **`elif` is a single keyword token**, not `else if`. Matches §5.23 and the Python convention. Saves a parse path.
+
+  **Step 5 — Top-level executable statements (LOCKED)**
+
+  Two operations on already-declared systems. Both are top-level only — they appear among `<top_level_decl>` alternatives, not inside any block. Reserved keywords (`run`, `add`) keep them grammar-special; they cannot be redefined or shadowed by user identifiers.
+
+  ```
+  <add_stmt>  ::= IDENT "." "add" "(" IDENT "," "arrival" ":" <expr> ")" ";"
+
+  <run_stmt>  ::= "run" "(" IDENT [ "," "until" ":" <expr> ] ")" ";"
+  ```
+
+  Decisions baked into this:
+  - **Both `arrival` and `until` accept `<expr>`**, not `INT_LIT`. Rationale: these are runtime values that may sensibly come from a variable (e.g. `until: maxTicks` where `maxTicks` is a `static int`). Only `quant` (in `<scheduler>`) is restricted to `INT_LIT`, because a scheduler quantum is a static configuration knob, not a runtime value.
+  - **`run` is a reserved keyword.** It cannot appear anywhere except as the start of `<run_stmt>`. A user cannot have a variable, function, or process named `run`. This is stricter than how `wait`/`post`/`print` are treated (those are ordinary identifiers that the language defines as built-ins), and it reflects that `run` has exactly one role in the language: starting a simulation at top level.
+  - **`add` is also a reserved keyword in this grammar** (it appears as the literal `"add"` in `<add_stmt>`). Same reasoning — `Sys1.add(...)` is a special, narrowly-scoped operation, not a general method call.
+
+  **Reserved keywords accumulated across the grammar.** The lexer must recognize these as their own token classes, not as identifiers:
+
+  - **Types and storage:** `int`, `float`, `bool`, `string`, `semaphore`, `process`, `system`, `enum`, `static`, `func`
+  - **Boolean literals:** `true`, `false`
+  - **Control flow:** `if`, `elif`, `else`, `while`, `return`
+  - **Built-in operations:** `wait`, `post`, `print` (treated as ordinary identifiers in the grammar — the language defines them as built-ins)
+  - **Scheduler names:** `FCFS`, `SJF`, `SRTF`, `RR`, `PRIORITY`
+  - **Field names (as keywords in their host rules):** `processes`, `scheduler`, `quant`, `burst`, `priority`, `arrival`, `until`
+  - **Process attribute names:** `state` (also `burst`, `priority`, `arrival` — overloaded with field names but unambiguous because of the leading `.`)
+  - **Top-level operations:** `run`, `add`
+
+  **Step 6 — Review pass (IN PROGRESS — 4 open issues, deferred to next chat)**
+
+  A full end-to-end audit of the grammar found four real issues that need decisions before Part 1 lock. None of them are blockers for the overall structure; they are gaps and minor inconsistencies. The grammar shape itself (Steps 1–5) is sound — no ambiguities, no orphan rules, no undefined references, follows Sebesta §3.3.2 conventions, dangling-else avoided via mandatory `<block>`.
+
+  **Issue 1 — `State s <- ready;` example contradicts the grammar.**
+
+  §5.10 of this README shows three example lines using `State` as a type:
+  ```
+  State s <- ready;       // s is ready (0)
+  int x <- blocked;       // x gets 2 — enum to int coercion
+  State t <- 1;           // t gets running — int to enum coercion
+  ```
+  But our Step 2 decision (option b in the §5.21 update) was: enum types are NOT first-class, you pass and declare them as `int` and rely on coercion. So under the locked grammar, `State s <- ready;` does not parse — only `int s <- ready;` does. Three options to resolve:
+  - (A) Keep the grammar; revise §5.10 examples to use `int` everywhere. Smallest change. Recommended unless there's a strong reason not to.
+  - (B) Allow enum names as types in `<var_decl_stmt>` and `<static_decl>` only (not in function params/returns). Asymmetric — hard to defend in the exam.
+  - (C) Make enum types fully first-class everywhere (params, returns, locals). Reverses the §5.21 decision. Biggest change, most expressive.
+
+  Decide first; the README revisions follow from the choice.
+
+  **Issue 2 — `STRING_LIT` is undefined.**
+
+  We have INT_LIT (digits), FLOAT_LIT (digits.digits), BOOL_LIT (true/false), but never specified the rules for string literals. The lexer cannot be written without this. Decisions needed:
+  - Delimiter: presumably `"` (double quote), matching §5.5 examples like `"hello"`, `"done"`.
+  - Allowed inner characters: any character except `"` and newline?
+  - Escape sequences: `\"`, `\n`, `\t`, `\\` — yes/no?
+  - Multi-line strings: yes/no? (recommend no, simpler lexer)
+
+  **Issue 3 — Comments are missing.**
+
+  Section 6's example program uses `//` line comments (`// Static variable`, `// Semaphore declarations`, etc.), but comments are never specified anywhere in the language design. Decisions needed:
+  - Single-line `// ... \n` — yes (already used in examples).
+  - Multi-line `/* ... */` — yes/no? (recommend no for simplicity, matches Python's choice).
+
+  **Issue 4 — `BOOL_LIT` representation: keyword or token?**
+
+  The grammar uses `BOOL_LIT` as a lexer token in `<literal>`, but `true` and `false` also appear in the keyword roundup above. Pick one:
+  - (A) Lexer recognizes `true`/`false` and emits the token `BOOL_LIT` with the boolean value. They're not keywords for syntax-error purposes; they're literals (same treatment as `42` for INT_LIT).
+  - (B) `true`/`false` are keywords; `<literal>` rule is `<literal> ::= INT_LIT | FLOAT_LIT | "true" | "false" | STRING_LIT`.
+
+  Option (A) is consistent with how every other literal type is handled. Recommended.
+
+  **Two notes also surfaced by the audit (no decision required, just documentation):**
+
+  - The grammar is **LL(2) at one point**, not strictly LL(1): `<assign_stmt>` and `<call_stmt>` both start with `IDENT`, and the parser disambiguates by peeking the next token (`<-` → assignment, `(` → call). Standard recursive-descent handling. Worth mentioning explicitly in the D1 spec.
+  - **Enum member names can collide with process attribute names.** A user could write `enum State { burst, ready }`, making `burst` both an enum constant and a process attribute. The grammar handles this without ambiguity (enum members appear as bare `IDENT` in expressions; process attributes only after `.`), but the type checker should reject this collision per §5.10's rule that "Member names live in the global namespace — collisions with other identifiers are a compile-time error."
 
 ---
 
@@ -499,7 +737,7 @@ run(Sys1, until: 20);
 - [x] Round 3 — Type system locked
 - [x] Round 4 — Precedence and associativity locked
 - [x] Round 5 — Domain-specific construct syntax locked
-- [ ] Round 6 — EBNF grammar drafted
+- [~] Round 6 — EBNF grammar drafted (Steps 1–5 locked; Step 6 review pass found 4 open issues — see §5.24)
 - [ ] Lexer implemented
 - [ ] Parser implemented
 - [ ] D1 prose drafted (§4.1, §4.2, §4.3, §4.6)
@@ -511,4 +749,4 @@ run(Sys1, until: 20);
 
 ---
 
-*Last updated: 5 May 2026.*
+*Last updated: 7 May 2026.*
