@@ -184,7 +184,7 @@ This section is filled in as decisions are locked. Each decision will record: th
   | `string` | `"hello"`, `"done"` |
   | `semaphore` | primitive — `semaphore mutex <- 1;` |
 
-- [x] **5.10 Structured type** — **`enum` with implicit int coercion.**
+- [x] **5.10 Structured type** — **`enum` as first-class type in variable declarations, with two-layer range enforcement.**
 
   **Enum declaration syntax:**
   ```
@@ -203,6 +203,8 @@ This section is filled in as decisions are locked. Each decision will record: th
   - Enum declarations are top-level only — they cannot appear inside process or function bodies.
   - Member names live in the global namespace — collisions with other identifiers are a compile-time error.
 
+  **Enum types are first-class in variable and static declarations.** `State s <- ready;` is legal. The grammar accepts any `IDENT` as a type name in `<var_decl_stmt>` and `<static_decl>`; the type checker (Part 2) validates that the name refers to a declared enum.
+
   ```
   enum State {
       ready,      // 0
@@ -211,19 +213,37 @@ This section is filled in as decisions are locked. Each decision will record: th
       finished    // 3
   }
 
-  State s <- ready;    // s is ready (0)
-  int x <- blocked;    // x gets 2 — enum to int coercion
-  State t <- 1;        // t gets running — int to enum coercion
+  State s <- ready;       // ✅ enum member assigned to enum variable
+  State t <- s;           // ✅ enum-to-enum assignment — same type
+  int x <- blocked;       // ✅ enum to int — widening, always safe (x gets 2)
+  State u <- 1;           // ✅ compiles — int-to-enum coercion, checked at runtime (u gets running)
+  State bad <- 99;        // ❌ COMPILE-TIME ERROR — literal 99 is out of range [0, 3]
   ```
 
-  | Coercion | Allowed |
-  |---|---|
-  | `enum` → `int` | ✅ implicit |
-  | `int` → `enum` | ✅ implicit |
-  | `enum` → `float` | ❌ not allowed |
-  | `float` → `enum` | ❌ not allowed |
+  **Two-layer range enforcement for int-to-enum assignments (Sebesta §6.13, §6.14):**
 
-  Exam justification: enum-int coercion follows C convention (Sebesta §6.11). Enums are structured types with an underlying integer representation — distinct from primitive-to-primitive coercion rules.
+  | Right-hand side | When checked | Rule |
+  |---|---|---|
+  | Enum member (`ready`, `blocked`, …) | — | Always valid; no check needed |
+  | Enum variable of the same type | — | Always valid; same range guaranteed |
+  | `INT_LIT` | **Compile time** | Rejected if literal ∉ `[0, memberCount-1]` |
+  | Integer expression or variable | **Runtime** | Error thrown if evaluated value ∉ `[0, memberCount-1]` |
+
+  **Type equivalence for enums — name equivalence (Sebesta §6.15).** Two enum types are compatible only if they have the same declared name. `Day` and `Month` are different types even if they have the same number of members. `Day d <- aMonthVar;` is a compile-time type error.
+
+  | Assignment | Result |
+  |---|---|
+  | `EnumType var <- enumMember` | ✅ always valid |
+  | `EnumType var <- sameTypeVar` | ✅ always valid |
+  | `EnumType var <- differentEnumVar` | ❌ compile-time type error |
+  | `EnumType var <- INT_LIT` in range | ✅ valid |
+  | `EnumType var <- INT_LIT` out of range | ❌ compile-time error |
+  | `EnumType var <- intExpression` | ✅ compiles; runtime error if out of range |
+  | `int var <- enumValue` | ✅ always valid — widening, no data loss |
+  | `EnumType var <- floatAnything` | ❌ compile-time error |
+  | `float var <- enumValue` | ❌ compile-time error |
+
+  Exam justification: Sebesta §6.4.1 identifies range validity as a core enum design issue. §6.13 establishes that type errors must be detected either statically or dynamically for strong typing. §6.14 notes that coercion weakens strong typing — we limit int-to-enum coercion to cases where the value is provably valid (literal) or checked at runtime (expression), which is a deliberate trade-off between writability and reliability (§1.6). §6.15 name equivalence prevents cross-enum assignment bugs that structural equivalence would silently allow.
 
 - [x] **5.11 Type categories** — Three categories: primitive, built-in structured, user-defined structured.
 
@@ -357,7 +377,7 @@ This section is filled in as decisions are locked. Each decision will record: th
 - [x] **5.21 User-defined functions** — **`func Name(param: type, ...) -> returnType { body }`**
   - Keyword: `func`.
   - Parameters: explicit types, named with `:` convention.
-  - Valid parameter types: `int`, `float`, `bool`, `string`, `semaphore`, `process`. Enum types are **not** first-class — to pass an enum value, declare the parameter as `int` and rely on the enum↔int coercion rules from §5.10.
+  - Valid parameter types: `int`, `float`, `bool`, `string`, `semaphore`, `process`. Enum types are first-class in variable declarations (§5.10) but **not yet in function parameter or return types** — that is deferred to Part 2. To pass an enum value into a function, declare the parameter as `int` and rely on the enum→int widening coercion from §5.10.
   - Valid return types: `int`, `float`, `bool`, `string`. Returning a `semaphore` or `process` reference is not allowed.
   - Return type: explicit, after `->`.
   - Return statement: `return` keyword.
@@ -419,7 +439,7 @@ This section is filled in as decisions are locked. Each decision will record: th
 
 ### Round 6 — Grammar
 
-- [ ] **5.24 EBNF grammar** — *being drafted step by step. EBNF metasymbols follow Sebesta §3.3.2: `[ ]` optional, `{ }` zero-or-more repetition, `( ... | ... )` grouped alternatives. Where braces are used to express left-associative operator chains, associativity is not implied by the grammar itself (Sebesta §3.3.2, p.127) — it is enforced by the parser, consistent with our decision in §5.13.*
+- [x] **5.24 EBNF grammar** — *being drafted step by step. EBNF metasymbols follow Sebesta §3.3.2: `[ ]` optional, `{ }` zero-or-more repetition, `( ... | ... )` grouped alternatives. Where braces are used to express left-associative operator chains, associativity is not implied by the grammar itself (Sebesta §3.3.2, p.127) — it is enforced by the parser, consistent with our decision in §5.13.*
 
   **Step 1 — Top-level structure (LOCKED)**
 
@@ -440,10 +460,14 @@ This section is filled in as decisions are locked. Each decision will record: th
 
   **Step 2 — Declarations (in progress)**
 
-  Type rules — three context-specific type categories. This refines §5.9 / §5.21: enum types are NOT first-class types in the grammar — enum-typed values are passed as `int` and rely on the enum↔int coercion rules from §5.10. So `func nextState(s: State) -> State` is not legal; `func nextState(s: int) -> int` is.
+  Type rules — four context-specific type categories. `<decl_type>` is used in variable and static declarations and accepts enum names as well as simple types. `<param_type>` and `<return_type>` remain restricted to built-in types for now — enum types in function signatures are deferred to Part 2.
 
   ```
   <simple_type>    ::= "int" | "float" | "bool" | "string"
+
+  <decl_type>      ::= <simple_type> | IDENT
+                    // IDENT in type position is validated by the type checker
+                    // as a declared enum name — the grammar is permissive here
 
   <param_type>     ::= <simple_type> | "semaphore" | "process"
 
@@ -453,7 +477,7 @@ This section is filled in as decisions are locked. Each decision will record: th
   `static_decl` and `semaphore_decl` — initial value is any expression at the grammar level; type/sign constraints (e.g., semaphore initial value must be a non-negative int) are checked by the type checker.
 
   ```
-  <static_decl>    ::= "static" <simple_type> IDENT "<-" <expr> ";"
+  <static_decl>    ::= "static" <decl_type> IDENT "<-" <expr> ";"
 
   <semaphore_decl> ::= "semaphore" IDENT "<-" <expr> ";"
   ```
@@ -561,7 +585,7 @@ This section is filled in as decisions are locked. Each decision will record: th
                      | <while_stmt>
                      | <return_stmt>
 
-  <var_decl_stmt>  ::= <simple_type> IDENT "<-" <expr> ";"
+  <var_decl_stmt>  ::= <decl_type> IDENT "<-" <expr> ";"
 
   <assign_stmt>    ::= IDENT "<-" <expr> ";"
 
@@ -601,7 +625,7 @@ This section is filled in as decisions are locked. Each decision will record: th
   **Reserved keywords accumulated across the grammar.** The lexer must recognize these as their own token classes, not as identifiers:
 
   - **Types and storage:** `int`, `float`, `bool`, `string`, `semaphore`, `process`, `system`, `enum`, `static`, `func`
-  - **Boolean literals:** `true`, `false`
+  - **Boolean literals:** `true`, `false` — recognized by the lexer as `BOOL_LIT` tokens, not grammar-level keywords (see Issue 4 resolution above)
   - **Control flow:** `if`, `elif`, `else`, `while`, `return`
   - **Built-in operations:** `wait`, `post`, `print` (treated as ordinary identifiers in the grammar — the language defines them as built-ins)
   - **Scheduler names:** `FCFS`, `SJF`, `SRTF`, `RR`, `PRIORITY`
@@ -609,51 +633,43 @@ This section is filled in as decisions are locked. Each decision will record: th
   - **Process attribute names:** `state` (also `burst`, `priority`, `arrival` — overloaded with field names but unambiguous because of the leading `.`)
   - **Top-level operations:** `run`, `add`
 
-  **Step 6 — Review pass (IN PROGRESS — 4 open issues, deferred to next chat)**
+  **Step 6 — Review pass (LOCKED — all 4 issues resolved)**
 
-  A full end-to-end audit of the grammar found four real issues that need decisions before Part 1 lock. None of them are blockers for the overall structure; they are gaps and minor inconsistencies. The grammar shape itself (Steps 1–5) is sound — no ambiguities, no orphan rules, no undefined references, follows Sebesta §3.3.2 conventions, dangling-else avoided via mandatory `<block>`.
+  A full end-to-end audit of the grammar found four issues. All four are now resolved. The grammar shape (Steps 1–5) is sound — no ambiguities, no orphan rules, no undefined references, follows Sebesta §3.3.2 conventions, dangling-else avoided via mandatory `<block>`.
 
-  **Issue 1 — `State s <- ready;` example contradicts the grammar.**
+  **Issue 1 — Enum types in declarations. RESOLVED: Option C (first-class in declarations).**
 
-  §5.10 of this README shows three example lines using `State` as a type:
+  Enum types are now first-class in `<var_decl_stmt>` and `<static_decl>` via the new `<decl_type>` rule. `State s <- ready;` is legal. The §5.10 examples have been updated accordingly. Enum types remain excluded from `<param_type>` and `<return_type>` — deferred to Part 2. Exam justification: Sebesta §6.4.2 — using plain `int` to simulate enums eliminates type checking; making enum a proper type restores it.
+
+  **Issue 2 — `STRING_LIT` was undefined. RESOLVED.**
+
+  String literals use double-quote delimiters. Any character except `"` and newline is allowed unescaped. Supported escape sequences: `\"`, `\\`, `\n`, `\t`. Multi-line strings are not supported — a newline inside a string literal is a lexer error. Rationale: single-line restriction means an unclosed quote is caught on the same line, improving reliability (Sebesta §1.3). The lexer rule:
+
   ```
-  State s <- ready;       // s is ready (0)
-  int x <- blocked;       // x gets 2 — enum to int coercion
-  State t <- 1;           // t gets running — int to enum coercion
+  STRING_LIT  ::=  '"'  { <str_char> }  '"'
+  <str_char>  ::=  any character except '"' and '\n'
+               |   '\' ( '"' | '\' | 'n' | 't' )
   ```
-  But our Step 2 decision (option b in the §5.21 update) was: enum types are NOT first-class, you pass and declare them as `int` and rely on coercion. So under the locked grammar, `State s <- ready;` does not parse — only `int s <- ready;` does. Three options to resolve:
-  - (A) Keep the grammar; revise §5.10 examples to use `int` everywhere. Smallest change. Recommended unless there's a strong reason not to.
-  - (B) Allow enum names as types in `<var_decl_stmt>` and `<static_decl>` only (not in function params/returns). Asymmetric — hard to defend in the exam.
-  - (C) Make enum types fully first-class everywhere (params, returns, locals). Reverses the §5.21 decision. Biggest change, most expressive.
 
-  Decide first; the README revisions follow from the choice.
+  `STRING_LIT` is a lexer-level rule only. The EBNF grammar references it as a terminal in `<literal>`.
 
-  **Issue 2 — `STRING_LIT` is undefined.**
+  **Issue 3 — Comments were missing. RESOLVED.**
 
-  We have INT_LIT (digits), FLOAT_LIT (digits.digits), BOOL_LIT (true/false), but never specified the rules for string literals. The lexer cannot be written without this. Decisions needed:
-  - Delimiter: presumably `"` (double quote), matching §5.5 examples like `"hello"`, `"done"`.
-  - Allowed inner characters: any character except `"` and newline?
-  - Escape sequences: `\"`, `\n`, `\t`, `\\` — yes/no?
-  - Multi-line strings: yes/no? (recommend no, simpler lexer)
+  Single-line comments only: `//` introduces a comment that extends to the end of the line. Multi-line `/* ... */` block comments are not supported — they would add a state to the lexer for no gain in a language this small (same rationale as Python's single-comment-style choice). Comments are stripped by the lexer; the parser never sees them.
 
-  **Issue 3 — Comments are missing.**
+  ```
+  // This is a valid comment — everything after // until newline is ignored
+  semaphore mutex <- 1;  // inline comment also valid
+  ```
 
-  Section 6's example program uses `//` line comments (`// Static variable`, `// Semaphore declarations`, etc.), but comments are never specified anywhere in the language design. Decisions needed:
-  - Single-line `// ... \n` — yes (already used in examples).
-  - Multi-line `/* ... */` — yes/no? (recommend no for simplicity, matches Python's choice).
+  **Issue 4 — `BOOL_LIT` keyword vs. token. RESOLVED: Option A (lexer token).**
 
-  **Issue 4 — `BOOL_LIT` representation: keyword or token?**
+  `true` and `false` are recognized by the lexer and emit a `BOOL_LIT` token with the boolean value. They are **not** quoted strings in the EBNF grammar — they are handled identically to `INT_LIT` and `FLOAT_LIT`. The lexer checks identifiers against the keyword table; when it matches `true` or `false`, it emits `BOOL_LIT` rather than `IDENT`. Removed `true` and `false` from the reserved keyword list — they are lexer-level reserved words that produce a literal token, not grammar-level keywords. Rationale: consistency with all other literal types (Sebesta §3.3.2 — tokens are classified by the lexer, grammar works with token classes).
 
-  The grammar uses `BOOL_LIT` as a lexer token in `<literal>`, but `true` and `false` also appear in the keyword roundup above. Pick one:
-  - (A) Lexer recognizes `true`/`false` and emits the token `BOOL_LIT` with the boolean value. They're not keywords for syntax-error purposes; they're literals (same treatment as `42` for INT_LIT).
-  - (B) `true`/`false` are keywords; `<literal>` rule is `<literal> ::= INT_LIT | FLOAT_LIT | "true" | "false" | STRING_LIT`.
+  **Two notes from the audit (no decision required, already documented):**
 
-  Option (A) is consistent with how every other literal type is handled. Recommended.
-
-  **Two notes also surfaced by the audit (no decision required, just documentation):**
-
-  - The grammar is **LL(2) at one point**, not strictly LL(1): `<assign_stmt>` and `<call_stmt>` both start with `IDENT`, and the parser disambiguates by peeking the next token (`<-` → assignment, `(` → call). Standard recursive-descent handling. Worth mentioning explicitly in the D1 spec.
-  - **Enum member names can collide with process attribute names.** A user could write `enum State { burst, ready }`, making `burst` both an enum constant and a process attribute. The grammar handles this without ambiguity (enum members appear as bare `IDENT` in expressions; process attributes only after `.`), but the type checker should reject this collision per §5.10's rule that "Member names live in the global namespace — collisions with other identifiers are a compile-time error."
+  - The grammar is **LL(2) at one point**, not strictly LL(1): `<assign_stmt>` and `<call_stmt>` both start with `IDENT`, and the parser disambiguates by peeking the next token (`<-` → assignment, `(` → call). Standard recursive-descent handling. Must be documented in D1.
+  - **Enum member names can collide with process attribute names** (e.g. `enum State { burst, ready }`). The grammar is unambiguous (enum members appear as bare `IDENT`; process attributes only after `.`), but the type checker must reject this collision per the §5.10 rule that member names live in the global namespace.
 
 ---
 
@@ -737,7 +753,7 @@ run(Sys1, until: 20);
 - [x] Round 3 — Type system locked
 - [x] Round 4 — Precedence and associativity locked
 - [x] Round 5 — Domain-specific construct syntax locked
-- [~] Round 6 — EBNF grammar drafted (Steps 1–5 locked; Step 6 review pass found 4 open issues — see §5.24)
+- [x] Round 6 — EBNF grammar fully locked (Steps 1–6 complete, all 4 review issues resolved)
 - [ ] Lexer implemented
 - [ ] Parser implemented
 - [ ] D1 prose drafted (§4.1, §4.2, §4.3, §4.6)
@@ -749,4 +765,4 @@ run(Sys1, until: 20);
 
 ---
 
-*Last updated: 7 May 2026.*
+*Last updated: 8 May 2026.*
