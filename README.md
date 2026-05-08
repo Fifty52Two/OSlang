@@ -953,7 +953,7 @@ run(Sys1, until: 20);
 - [x] Round 6 — EBNF grammar fully locked (Steps 1–6 complete, all 4 review issues resolved)
 - [x] Round 7 — Lexer implementation decisions locked (§5.25, §5.26)
 - [x] Lexer implemented (TokenType.java, Token.java, Lexer.java, Main.java — Partner A)
-- [ ] Parser implemented
+- [x] Parser implemented
 - [ ] D1 prose drafted (§4.1, §4.2, §4.3, §4.6)
 - [ ] D3 example programs written (3 valid + 5 malformed)
 - [ ] D4 AI journal — 4 entries logged

@@ -1,0 +1,226 @@
+OSlang — D1 Design Specification (Part 1)
+CSE 341 · Concepts of Programming Languages · Gebze Technical University · Spring 2026
+
+§4.1 Language Overview
+OSlang is a domain-specific language (DSL) for declaring operating-system concepts — processes, semaphores, and schedulers — and simulating their execution. The intended domain is OS education: students can write small declarative programs that make scheduling behaviour visible without the setup cost of a full teaching kernel such as xv6 or PintOS.
+Operating-system abstractions such as ready queues, semaphore wait lists, and context switches are invisible at runtime in real systems. Textbooks teach them with prose and timing diagrams. OSlang fills the gap by making these constructs first-class syntax rather than buried in C structs and pthread calls. A producer-consumer setup that requires fifty lines of C takes ten lines in OSlang.
+Sample program:
+static int counter <- 0;
+semaphore mutex <- 1;
+semaphore empty <- 5;
+semaphore full  <- 0;
+
+enum State { ready, running, blocked, finished }
+
+func isBlocked(p: process) -> bool {
+    return p.state == blocked;
+}
+
+process Producer(burst: 3, priority: 2, arrival: 0) {
+    wait(empty);
+    wait(mutex);
+    counter <- counter + 1;
+    post(mutex);
+    post(full);
+}
+
+process Consumer(burst: 3, priority: 1, arrival: 1) {
+    wait(full);
+    wait(mutex);
+    counter <- counter - 1;
+    post(mutex);
+    post(empty);
+}
+
+system Sys1(processes: [Producer, Consumer], scheduler: RR(quant: 2));
+run(Sys1, until: 20);
+Language evaluation criteria (Sebesta Ch. 1):
+Readability (§1.3.1): First-class OS keywords (process, semaphore, wait, post) make programs self-documenting. Mandatory curly braces eliminate dangling-else ambiguity. The two-operator distinction (: for named fields, <- for assignment) makes parameter lists visually distinct from statements.
+Writability (§1.3.2): Optional priority and arrival parameters, built-in schedulers, and the run statement reduce boilerplate for the target domain. Users declare what they want simulated, not how to simulate it.
+Reliability (§1.3.3): Static scoping, mandatory variable initializers, narrowing-coercion errors at compile time, and single-line strings (unclosed quotes caught immediately) all reduce the class of errors that reach runtime.
+Cost (§1.6): Knowingly sacrificed generality — no memory management, no real concurrency, single CPU, bounded to ~10 processes. These limits keep the implementation achievable and the language focused.
+OSlang prioritises readability and reliability over generality. The domain-specific constructs are a deliberate choice: a language with process and semaphore as first-class syntax cannot be mistaken for a generic scripting language.
+
+§4.2 Lexical Structure
+The lexer produces a flat stream of tokens. The parser never sees whitespace, comments, or raw characters — only token objects carrying a type, a lexeme string, and a 1-based line number (Sebesta §4.2).
+Token categories:
+IDENT — pattern: [a-zA-Z_][a-zA-Z0-9_]* — examples: x, mutex, P1, my_process
+INT_LIT — pattern: [0-9]+ — examples: 0, 42, 100
+FLOAT_LIT — pattern: [0-9]+ '.' [0-9]+ — examples: 3.14, 0.5 (never .5 or 5.)
+BOOL_LIT — pattern: true | false (lexer-level, not grammar keywords) — examples: true, false
+STRING_LIT — pattern: '"' { char | escape } '"' — examples: "hello", "line\n"
+BOOL_LIT classification: true and false are recognized by the lexer through the keyword table and emit BOOL_LIT tokens — not grammar-level keyword strings. This is identical to how INT_LIT and FLOAT_LIT are handled, giving consistent treatment of all literal types (Sebesta §3.3.2).
+FLOAT_LIT restriction: both sides of the decimal point require at least one digit. '.5' and '5.' are lexer errors. This prevents ambiguity with the '.' in p.state.
+Reserved keywords:
+Types and storage: int  float  bool  string  semaphore  process  system  enum  static  func
+Control flow: if  elif  else  while  return
+Top-level operations: run  add
+Scheduler names: FCFS  SJF  SRTF  RR  PRIORITY
+Field and attribute names: processes  scheduler  quant  burst  priority  arrival  until  state
+Boolean literals (lexer-level): true  false — emit BOOL_LIT, not grammar keywords
+Note on priority: the lexeme priority (lowercase) is a process field keyword; PRIORITY (uppercase) is a scheduler keyword. The language is case-sensitive so these are distinct tokens.
+Operators:
+<-         ARROW          Assignment — maximal munch over < and <=
+->         ARROW_RETURN   Function return type separator
+== != < > <= >=   EQ NEQ LT GT LEQ GEQ   Comparison
+&& || !    AND OR NOT     Logical
+
+
+
+
+
+/ %  PLUS MINUS STAR SLASH PERCENT   Arithmetic
+
+
+
+
+
+Maximal munch disambiguation: when the lexer reads '<', it peeks the next character — '-' produces ARROW (<-), '=' produces LEQ (<=), anything else produces LT (<). Similarly, '->' requires peeking after '-'. Standard maximal-munch rule (Sebesta §4.2).
+Separators: ( )  { }  [ ]  ,  ;  :  .
+Comments: single-line only. '//' introduces a comment extending to end of line. Multi-line block comments /* ... */ are not supported — they would add a lexer state for no benefit in a language this size. Comments are stripped by the lexer; the parser never sees them.
+String literals: double-quote delimiters. Any character except '"' and newline is allowed unescaped. Supported escape sequences: "  \  \n  \t. Multi-line strings are not supported — a newline before the closing quote is a lexer error. Rationale: single-line restriction means an unclosed quote is caught on the same line, improving reliability (Sebesta §1.3.3).
+Lexer rule:
+STRING_LIT ::= '"' { any_char_except_quote_and_newline | '' ('"' | '' | 'n' | 't') } '"'
+
+§4.3 Syntax
+Complete grammar in EBNF following Sebesta §3.3.2 metasymbols: [ ] optional, { } zero-or-more repetition, ( ... | ... ) grouped alternatives. The grammar is unambiguous for the implemented subset. Three design decisions are annotated below.
+Annotation 1 — Left-associativity: the grammar uses { op term } repetition for all binary operators. Per Sebesta §3.3.2 p.127, this repetition is neutral on associativity — it does not encode left- or right-associativity by itself. Left-associativity is enforced by the parser's while-loop, which folds left: a+b+c becomes BinOp(+, BinOp(+, a, b), c).
+Annotation 2 — No dangling-else: Sebesta §3.3.1.4 shows the classic ambiguity arises when if/else branches can be bare statements. OSlang sidesteps this entirely: every branch body is a mandatory block (always braced). No matched/unmatched non-terminal split is needed.
+Annotation 3 — LL(2) disambiguation: the grammar is LL(2) at one point. Both assign_stmt and call_stmt begin with IDENT. The parser disambiguates by peeking the next token: IDENT followed by <- is assignment; IDENT followed by ( is a function call; IDENT followed by another IDENT is an enum-typed variable declaration (Sebesta §4.4.1).
+Full EBNF grammar:
+(* Top-level structure *)
+<program>        ::= <top_level_decl> { <top_level_decl> }
+
+<top_level_decl> ::= <static_decl>
+                   | <semaphore_decl>
+                   | <enum_decl>
+                   | <process_decl>
+                   | <func_decl>
+                   | <system_decl>
+                   | <add_stmt>
+                   | <run_stmt>
+
+(* Type rules *)
+<simple_type>    ::= "int" | "float" | "bool" | "string"
+<decl_type>      ::= <simple_type> | IDENT
+<param_type>     ::= <simple_type> | "semaphore" | "process"
+<return_type>    ::= <simple_type>
+
+(* Declarations *)
+<static_decl>    ::= "static" <decl_type> IDENT "<-" <expr> ";"
+<semaphore_decl> ::= "semaphore" IDENT "<-" <expr> ";"
+<enum_decl>      ::= "enum" IDENT "{" <enum_members> "}"
+<enum_members>   ::= IDENT { "," IDENT }
+
+<process_decl>       ::= "process" IDENT "(" <process_fields> ")" <block>
+<process_fields>     ::= <process_field> { "," <process_field> }
+<process_field>      ::= <process_field_name> ":" <expr>
+<process_field_name> ::= "burst" | "priority" | "arrival"
+
+<func_decl>      ::= "func" IDENT "(" [ <param_list> ] ")" "->" <return_type> <block>
+<param_list>     ::= <param> { "," <param> }
+<param>          ::= IDENT ":" <param_type>
+
+<system_decl>    ::= "system" IDENT "(" "processes" ":" "[" <process_list> "]"
+                                         "," "scheduler" ":" <scheduler>
+                                     ")" ";"
+<process_list>   ::= IDENT { "," IDENT }
+<scheduler>      ::= "FCFS" | "SJF" | "SRTF" | "PRIORITY"
+                   | "RR" "(" "quant" ":" INT_LIT ")"
+
+(* Expressions — bottom-up precedence cascade *)
+<expr>                ::= <or_expr>
+<or_expr>             ::= <and_expr> { "||" <and_expr> }
+<and_expr>            ::= <equality_expr> { "&&" <equality_expr> }
+<equality_expr>       ::= <relational_expr> { ( "==" | "!=" ) <relational_expr> }
+<relational_expr>     ::= <additive_expr> { ( "<" | ">" | "<=" | ">=" ) <additive_expr> }
+<additive_expr>       ::= <multiplicative_expr> { ( "+" | "-" ) <multiplicative_expr> }
+<multiplicative_expr> ::= <unary_expr> { ( "*" | "/" | "%" ) <unary_expr> }
+<unary_expr>          ::= ( "!" | "-" ) <unary_expr>
+                        | <postfix_expr>
+<postfix_expr>        ::= <primary> [ "." <process_attr> ]
+<process_attr>        ::= "state" | "burst" | "priority" | "arrival"
+<primary>             ::= <literal>
+                        | IDENT [ "(" [ <arg_list> ] ")" ]
+                        | "(" <expr> ")"
+<arg_list>            ::= <expr> { "," <expr> }
+<literal>             ::= INT_LIT | FLOAT_LIT | BOOL_LIT | STRING_LIT
+
+(* Statements *)
+<block>          ::= "{" { <statement> } "}"
+<statement>      ::= <var_decl_stmt>
+                   | <assign_stmt>
+                   | <call_stmt>
+                   | <if_stmt>
+                   | <while_stmt>
+                   | <return_stmt>
+<var_decl_stmt>  ::= <decl_type> IDENT "<-" <expr> ";"
+<assign_stmt>    ::= IDENT "<-" <expr> ";"
+<call_stmt>      ::= IDENT "(" [ <arg_list> ] ")" ";"
+<return_stmt>    ::= "return" <expr> ";"
+<while_stmt>     ::= "while" "(" <expr> ")" <block>
+<if_stmt>        ::= "if" "(" <expr> ")" <block>
+                     { "elif" "(" <expr> ")" <block> }
+                     [ "else" <block> ]
+
+(* Top-level executable statements *)
+<add_stmt>  ::= IDENT "." "add" "(" IDENT "," "arrival" ":" <expr> ")" ";"
+<run_stmt>  ::= "run" "(" IDENT [ "," "until" ":" <expr> ] ")" ";"
+Additional grammar design notes:
+Numeric literals are unsigned at token level. Negatives are formed by the unary - operator. This avoids ambiguity with the - in arithmetic expressions.
+Function calls are merged into primary. A bare IDENT is a variable reference; IDENT(...) is a function call. Same parse path until the parser sees '('.
+wait, post, print are not special in the grammar. They are ordinary function calls; built-in status is a semantic concern, not a syntactic one.
+Postfix dot-access is one level deep, closed attribute set. Only state, burst, priority, arrival may follow '.'. Anything else is a parse error. a.b.c does not parse. Sys1.add(...) is a separate top-level statement form, not an instance of general method-call syntax.
+Local variable declarations require an initializer. 'int x;' does not parse — 'int x <- 0;' does. Rationale: Sebesta §5.4.2 on reliability — uninitialized declarations are a common source of bugs.
+return always carries an expression. Bare 'return;' is not valid. Every function has a non-void return type, so a bare return would violate the function's own type signature.
+
+§4.6 Names, Binding, Scope, and Lifetime
+Legal identifiers (Sebesta §5.2):
+Identifiers follow the pattern [a-zA-Z_][a-zA-Z0-9_]*. Must start with a latin letter or underscore, may contain letters, digits, and underscores. The language is case-sensitive: Producer and producer are distinct identifiers. Case-sensitivity follows the C-family tradition already committed to by curly-brace syntax and aligns with Sebesta §5.2's note that modern languages favour case-sensitive identifiers because predefined names use mixed case.
+Legal examples: producer, P1, my_process, x
+Illegal examples: _internal (starts with underscore), 1process (starts with digit), my-process (hyphen not allowed)
+Bindings at compile time vs run time (Sebesta §5.4):
+OSlang uses static (early) binding for all types. The type of every variable is determined at declaration time and does not change.
+Compile-time bindings:
+
+Variable type: int x <- 0; — x is always int, bound at declaration
+Function signature: func f(a: int) -> bool — locked at declaration
+Process attributes: burst: 3 — type int, bound at parse time
+Enum member ordinals: ready=0, running=1 — fixed at enum declaration
+
+Run-time bindings:
+
+Semaphore initial value: semaphore mutex <- expr — value evaluated at runtime
+Local variable values: int x <- computePriority(...) — evaluated on each call
+
+Scoping rule (Sebesta §5.5):
+OSlang uses static (lexical) scoping. Variable lookup is resolved at compile time based on the syntactic structure of the source code — not on the call stack at runtime.
+Scope hierarchy:
+
+Global scope: semaphore declarations, enum declarations, static variable declarations, process declarations, function declarations, system declarations. All top-level names are visible everywhere.
+Function scope: each func body opens a new local scope. Parameters and local variables are visible only within that function.
+Process scope: each process body opens a new local scope. Local variables are visible only within that process.
+Block scope: blocks inside if/elif/else/while open nested scopes. Variables declared inside are not visible outside.
+
+Example:
+static int counter <- 0;  // global — visible everywhere
+
+process Producer(burst: 3) {
+    int temp <- 0;          // local to Producer — NOT visible in Consumer
+    counter <- counter + 1; // OK — counter is global
+}
+
+process Consumer(burst: 3) {
+    // temp is NOT visible here
+    counter <- counter - 1; // OK — counter is global
+}
+What would break under dynamic scoping: if OSlang used dynamic scoping, a local variable inside Producer could accidentally become visible inside a function called from Producer, even though that function has no textual access to it. This makes programs impossible to reason about locally — Sebesta §5.5 identifies this as the main disadvantage of dynamic scoping.
+Variable lifetime (Sebesta §5.4.3):
+OSlang has two lifetime categories. Heap-dynamic allocation is explicitly excluded.
+Local variables in process body — stack-dynamic: created when process executes, destroyed when process finishes. Example: int temp <- 0; inside process.
+Local variables in functions — stack-dynamic: created on function call, destroyed on return. Example: int x <- 0; inside func.
+Static variables — static lifetime: created at program start, exist for entire simulation. Example: static int counter <- 0;
+Semaphore declarations — static (implicit): exist for entire simulation.
+Process declarations — static (implicit): exist for entire simulation.
+Rationale for the static keyword: top-level variables that are not semaphores or process declarations require the explicit static keyword. An implicit rule would be equally correct but less readable. The explicit keyword makes the programmer's intent visible in the source — a readability gain (Sebesta §1.3.1) with no implementation cost.
+No heap-dynamic lifetime: heap allocation requires a memory manager and introduces a class of runtime errors (use-after-free, double-free) that would compete with the language-design work for attention. This exclusion is a hard scope limit documented in §3.

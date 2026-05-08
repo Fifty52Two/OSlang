@@ -1,0 +1,11 @@
+static int counter <- 0;
+semaphore mutex <- 1;
+
+process P1(burst: 3, priority: 1, arrival: 0) {
+    wait(mutex);
+    counter <- counter + 1;
+    post(mutex);
+}
+
+system Sys1(processes: [P1], scheduler: FCFS);
+run(Sys1, until: 10);
