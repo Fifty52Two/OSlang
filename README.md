@@ -180,7 +180,7 @@ This section is filled in as decisions are locked. Each decision will record: th
   |---|---|
   | `int` | `0`, `1`, `42` |
   | `float` | `3.14`, `0.5` |
-  | `bool` | `true`, `false` |
+  | `bool` | `true`, `false` — only. No int-to-bool coercion (Sebesta §6.2.2, §6.14). |
   | `string` | `"hello"`, `"done"` |
   | `semaphore` | primitive — `semaphore mutex <- 1;` |
 
@@ -673,6 +673,203 @@ This section is filled in as decisions are locked. Each decision will record: th
 
 ---
 
+### Round 7 — Implementation decisions (locked during Part 1 build)
+
+- [x] **5.25 Lexer implementation decisions** — locked during lexer build. Partner B must read this before writing the parser.
+
+  **Decision 1 — `wait`, `post`, `print` are reserved keyword tokens.**
+
+  The lexer emits `KW_WAIT`, `KW_POST`, `KW_PRINT` — not `IDENT`. A user cannot name anything `wait`, `post`, or `print`. The parser must accept these tokens wherever a built-in call statement appears. Specifically `<call_stmt>` must match `KW_WAIT | KW_POST | KW_PRINT | IDENT` as the function name, not just `IDENT`.
+
+  **Decision 2 — `priority` and `PRIORITY` are two different tokens.**
+
+  The language is case-sensitive (§5.5). The lexer emits:
+  - `KW_PRIORITY_F` for lowercase `priority` — process field name and process attribute
+  - `KW_PRIORITY` for uppercase `PRIORITY` — scheduler name
+
+  The parser must use the correct token in each grammar rule. `<process_field_name>` expects `KW_PRIORITY_F`. `<scheduler>` expects `KW_PRIORITY`.
+
+  **Decision 3 — `true` and `false` emit `BOOL_LIT`.**
+
+  They go through the keyword table but produce a literal token, not a grammar keyword. The parser handles them in `<literal>` exactly like `INT_LIT` and `FLOAT_LIT`.
+
+  **Decision 4 — Trailing underscore in identifier is a lexer error.**
+
+  `my_var_` throws `[Lexer Error] Line N: Identifier 'my_var_' must not end with an underscore`. The parser will never see such a token.
+
+  **Decision 5 — Leading underscore is a lexer error.**
+
+  `_internal` hits the unknown character handler and throws `[Lexer Error] Line N: Unexpected character '_'`. The parser will never see such a token.
+
+- [x] **5.26 Parser and AST implementation guide** — everything Partner B needs to write `Parser.java` and `AST.java`.
+
+  **File structure**
+
+  ```
+  OSlang/
+  ├── src/
+  │   ├── TokenType.java   (done — Partner A)
+  │   ├── Token.java       (done — Partner A)
+  │   ├── Lexer.java       (done — Partner A)
+  │   ├── Main.java        (done — Partner A)
+  │   ├── AST.java         (Partner B — all AST node classes in one file)
+  │   └── Parser.java      (Partner B)
+  └── out/
+  ```
+
+  **Build and run commands**
+
+  ```
+  javac -d out src/TokenType.java src/Token.java src/Lexer.java src/AST.java src/Parser.java src/Main.java
+  java -cp out Main program.osl                  # lex and parse, report errors
+  java -cp out Main program.osl --dump-tokens    # print token stream only
+  java -cp out Main program.osl --dump-ast       # print AST
+  ```
+
+  **Parser skeleton**
+
+  The parser is a recursive-descent parser — one method per non-terminal in the EBNF grammar (§5.24 Steps 1–5). Sebesta §4.4.
+
+  ```java
+  public class Parser {
+      private final List<Token> tokens;
+      private int pos = 0;
+
+      public Parser(List<Token> tokens) { this.tokens = tokens; }
+
+      private Token peek()    { return tokens.get(pos); }
+      private Token advance() { Token t = tokens.get(pos); if (pos < tokens.size() - 1) pos++; return t; }
+      private boolean check(TokenType type) { return peek().type == type; }
+
+      private Token peek2() {
+          int next = pos + 1;
+          return next < tokens.size() ? tokens.get(next) : tokens.get(tokens.size() - 1);
+      }
+
+      private Token expect(TokenType type) {
+          Token t = peek();
+          if (t.type != type) throw new RuntimeException(
+              "[Parser Error] Line " + t.line + ": Expected " + type + " but found '" + t.value + "'");
+          return advance();
+      }
+  }
+  ```
+
+  **The LL(2) disambiguation point**
+
+  Inside `parseStatement()`, two forms both start with `IDENT`:
+
+  ```
+  <assign_stmt>    IDENT  <-  ...     peek()=IDENT, peek2()=ARROW
+  <call_stmt>      IDENT  (   ...     peek()=IDENT, peek2()=LPAREN
+  <var_decl_stmt>  IDENT  IDENT ...   peek()=IDENT, peek2()=IDENT  (enum type)
+  ```
+
+  Also note: `<call_stmt>` now starts with `KW_WAIT | KW_POST | KW_PRINT | IDENT` — check for those keyword tokens before the IDENT cases.
+
+  Full dispatch:
+
+  ```java
+  private ASTNode parseStatement() {
+      TokenType t  = peek().type;
+      TokenType t2 = peek2().type;
+
+      if (t == TokenType.KW_INT    || t == TokenType.KW_FLOAT ||
+          t == TokenType.KW_BOOL   || t == TokenType.KW_STRING)
+          return parseVarDeclStmt();
+
+      if (t == TokenType.IDENT && t2 == TokenType.IDENT)
+          return parseVarDeclStmt();           // enum-typed var decl
+
+      if (t == TokenType.IDENT && t2 == TokenType.ARROW)
+          return parseAssignStmt();
+
+      if (t == TokenType.IDENT && t2 == TokenType.LPAREN)
+          return parseCallStmt();
+
+      if (t == TokenType.KW_WAIT  || t == TokenType.KW_POST ||
+          t == TokenType.KW_PRINT)
+          return parseCallStmt();              // built-in call
+
+      if (t == TokenType.KW_IF)    return parseIfStmt();
+      if (t == TokenType.KW_WHILE) return parseWhileStmt();
+      if (t == TokenType.KW_RETURN)return parseReturnStmt();
+
+      Token bad = peek();
+      throw new RuntimeException(
+          "[Parser Error] Line " + bad.line + ": Unexpected token '" + bad.value + "'");
+  }
+  ```
+
+  **AST node classes (all in `AST.java`)**
+
+  ```java
+  // Top-level
+  class ProgramNode       { List<ASTNode> declarations; }
+  class StaticDeclNode    { String declType; String name; ASTNode init; }
+  class SemaphoreDeclNode { String name; ASTNode init; }
+  class EnumDeclNode      { String name; List<String> members; }
+  class ProcessDeclNode   { String name; List<ProcessFieldNode> fields; BlockNode body; }
+  class FuncDeclNode      { String name; List<ParamNode> params; String returnType; BlockNode body; }
+  class SystemDeclNode    { String name; List<String> processes; SchedulerNode scheduler; }
+  class AddStmtNode       { String systemName; String processName; ASTNode arrival; }
+  class RunStmtNode       { String systemName; ASTNode until; }
+
+  // Helpers
+  class ProcessFieldNode  { String fieldName; ASTNode value; }
+  class ParamNode         { String name; String type; }
+  class SchedulerNode     { String name; ASTNode quant; }
+
+  // Statements
+  class BlockNode         { List<ASTNode> statements; }
+  class VarDeclStmtNode   { String declType; String name; ASTNode init; }
+  class AssignStmtNode    { String target; ASTNode value; }
+  class CallStmtNode      { String name; List<ASTNode> args; }
+  class ReturnStmtNode    { ASTNode value; }
+  class WhileStmtNode     { ASTNode condition; BlockNode body; }
+  class IfStmtNode        { ASTNode condition; BlockNode thenBlock;
+                            List<ElifClauseNode> elifClauses; BlockNode elseBlock; }
+  class ElifClauseNode    { ASTNode condition; BlockNode body; }
+
+  // Expressions
+  class BinOpNode         { String op; ASTNode left; ASTNode right; }
+  class UnaryOpNode       { String op; ASTNode operand; }
+  class PostfixDotNode    { ASTNode object; String attribute; }
+  class FuncCallNode      { String name; List<ASTNode> args; }
+  class IdentNode         { String name; }
+  class IntLitNode        { int value; }
+  class FloatLitNode      { double value; }
+  class BoolLitNode       { boolean value; }
+  class StringLitNode     { String value; }
+  ```
+
+  Every node must implement `dump(int indent)` for `--dump-ast` output.
+
+  **Error message format**
+
+  ```
+  [Parser Error] Line 5: Expected ';' but found '}'
+  [Parser Error] Line 12: Unexpected token 'float' at top level
+  [Parser Error] Line 8: Expected a type name but found '42'
+  [Parser Error] Line 1: Empty program — at least one declaration is required
+  ```
+
+  **`--dump-ast` output format**
+
+  ```
+  ProgramNode
+    StaticDeclNode type=int name=counter
+      IntLitNode 0
+    ProcessDeclNode name=Producer
+      ProcessFieldNode burst
+        IntLitNode 3
+      BlockNode
+        CallStmtNode wait
+          IdentNode mutex
+  ```
+
+---
+
 ## PART 2 — Deferred until after 8 May
 
 - Strong typing rule
@@ -754,7 +951,8 @@ run(Sys1, until: 20);
 - [x] Round 4 — Precedence and associativity locked
 - [x] Round 5 — Domain-specific construct syntax locked
 - [x] Round 6 — EBNF grammar fully locked (Steps 1–6 complete, all 4 review issues resolved)
-- [ ] Lexer implemented
+- [x] Round 7 — Lexer implementation decisions locked (§5.25, §5.26)
+- [x] Lexer implemented (TokenType.java, Token.java, Lexer.java, Main.java — Partner A)
 - [ ] Parser implemented
 - [ ] D1 prose drafted (§4.1, §4.2, §4.3, §4.6)
 - [ ] D3 example programs written (3 valid + 5 malformed)
