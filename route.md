@@ -1,720 +1,343 @@
-# OSlang — Lexer & Parser Implementation Route
+# OSlang — Part 2 Roadmap
+**Deadline:** Friday, 22 May 2026 · 23:59
+**Exam:** Thursday, 28 May 2026 · 08:30
 
-> **CSE 341 · Gebze Technical University · Spring 2026**
-> This document is the step-by-step implementation plan for the Part 1 lexer and parser.
-> The grammar it implements is the fully locked grammar from README §5.24 (Round 6, all 4 review issues resolved).
-> Read this alongside the README. Do not implement anything that contradicts the README — the README is the single source of truth for every design decision.
-
----
-
-## Who Owns What
-
-The split follows the natural boundary between the two components. This boundary matters beyond fairness — the in-class exam on 14 May targets each partner on the components they personally wrote. Whatever you own, you must be able to trace through it on paper and cite the Sebesta section behind every decision.
-
-| Component | Files | Owner |
-|---|---|---|
-| Token type enum | `TokenType.java` | **Partner A** |
-| Token class | `Token.java` | **Partner A** |
-| Lexer | `Lexer.java` | **Partner A** |
-| AST node classes | `AST.java` (or one file per node) | **Partner B** |
-| Parser | `Parser.java` | **Partner B** |
-| Main entry point | `Main.java` | Either — agree once |
-| D1 §4.2 Lexical Structure | Written section | **Partner A** |
-| D1 §4.3 Syntax (EBNF) | Written section | **Partner B** |
-| D1 §4.1 and §4.6 | Written sections | Both — write together |
-| D3 malformed programs (lexer errors) | 2–3 programs | **Partner A** |
-| D3 malformed programs (parser errors) | 2–3 programs | **Partner B** |
-| D3 valid programs | 3 programs | Split evenly |
+> **Work split agreement:**
+> - **Tuana** → TypeChecker (all declarations) + Expression Evaluator in Interpreter + D1 §4.4, §4.5, §4.8
+> - **Ferhat** → Statement Executor + Simulation Engine in Interpreter + D1 §4.4 (`while`), §4.7
+> - **Both** → All core decisions, skeleton design, integration, testing, individual D4/D5/D6
 
 ---
 
-## Step 0 — Agree the Interface First (Both Partners, ~15 min)
+## STEP 0 — Lock deferred decisions (Both together · ~30 min)
 
-Before either partner writes a single line of implementation, agree on `TokenType` and `Token`. This is the only shared interface between the two components. Once it is locked, both partners can work fully in parallel.
+These must be agreed before anyone writes a single line of code.
+Write each decision into the README and into D1 immediately after agreeing.
 
-### `TokenType.java`
-
-```java
-public enum TokenType {
-    // --- Literals ---
-    INT_LIT,        // e.g. 42
-    FLOAT_LIT,      // e.g. 3.14
-    BOOL_LIT,       // true or false — emitted by the lexer, NOT a grammar keyword
-    STRING_LIT,     // e.g. "hello"
-
-    // --- Identifier ---
-    IDENT,          // any user-defined name
-
-    // --- Type keywords ---
-    KW_INT, KW_FLOAT, KW_BOOL, KW_STRING,
-    KW_SEMAPHORE, KW_PROCESS, KW_SYSTEM,
-    KW_ENUM, KW_STATIC, KW_FUNC,
-
-    // --- Control flow keywords ---
-    KW_IF, KW_ELIF, KW_ELSE, KW_WHILE, KW_RETURN,
-
-    // --- Top-level operation keywords ---
-    KW_RUN, KW_ADD,
-
-    // --- Scheduler keywords (uppercase) ---
-    KW_FCFS, KW_SJF, KW_SRTF, KW_RR, KW_PRIORITY,
-
-    // --- Field / attribute keywords ---
-    KW_PROCESSES, KW_SCHEDULER, KW_QUANT,
-    KW_BURST, KW_PRIORITY_F,   // priority (field/lowercase) vs PRIORITY (scheduler/uppercase)
-    KW_ARRIVAL, KW_UNTIL, KW_STATE,
-
-    // --- Assignment operator ---
-    ARROW,          // <-
-
-    // --- Comparison operators ---
-    EQ, NEQ, LT, GT, LEQ, GEQ,
-
-    // --- Boolean operators ---
-    AND, OR, NOT,   // && || !
-
-    // --- Arithmetic operators ---
-    PLUS, MINUS, STAR, SLASH, PERCENT,
-
-    // --- Function return arrow ---
-    ARROW_RETURN,   // ->
-
-    // --- Separators ---
-    LPAREN, RPAREN, LBRACE, RBRACE, LBRACKET, RBRACKET,
-    COMMA, SEMICOLON, COLON, DOT,
-
-    // --- Special ---
-    EOF
-}
-```
-
-### `Token.java`
-
-```java
-public class Token {
-    public final TokenType type;
-    public final String value;  // raw lexeme as it appeared in source
-    public final int line;      // 1-based line number, for error messages
-
-    public Token(TokenType type, String value, int line) {
-        this.type  = type;
-        this.value = value;
-        this.line  = line;
-    }
-
-    @Override
-    public String toString() {
-        return String.format("Token(%s, \"%s\", line=%d)", type, value, line);
-    }
-}
-```
-
-**Note on `priority`:** The lexeme `priority` (lowercase) is a process field name; `PRIORITY` (uppercase) is a scheduler name. The lexer emits `KW_PRIORITY_F` for lowercase and `KW_PRIORITY` for uppercase. If you prefer simplicity, use a single token for both and resolve by context in the parser — agree before starting.
+- [ ] **Default `priority` when omitted** → `0` (Sebesta §1.3 — reliability, predictable defaults)
+- [ ] **Max tick limit for `run` without `until`** → `1000` ticks, print timeout message if hit
+- [ ] **Short-circuit `&&` / `||`** → yes, left operand first; right operand skipped when result is determined (Sebesta §7.6)
+- [ ] **Operand evaluation order** → left-to-right always (Sebesta §7.2)
+- [ ] **Parameter passing mode** → call-by-value for `int`, `float`, `bool`, `string`; call-by-reference for `semaphore` and `process` (Sebesta Ch. 9)
+- [ ] **RR quantum behavior** → process finishing mid-quantum releases CPU immediately; quantum exhausted → back of ready queue (Sebesta §1.3 — writability)
+- [ ] **RR quantum mid-block behavior** → process that calls `wait(s)` and blocks mid-quantum gets a fresh full quantum when it unblocks *(decide this now — do not leave it open)*
 
 ---
 
-## Part A — Lexer
+## STEP 1 — Agree on shared interfaces (Both together · ~20 min)
 
-**Owner: Partner A**
+These are the contracts both partners depend on. Agree before splitting.
 
-The lexer reads source characters and produces a flat list of `Token` objects. The parser consumes that list. They communicate only through `Token`.
+- [ ] **`Environment` API** — both partners call this from different components:
+  - `define(String name, RuntimeValue val)` → creates binding in current scope
+  - `assign(String name, RuntimeValue val)` → walks scope chain, updates existing binding
+  - `lookup(String name)` → returns value or throws if undefined
+  - `push()` → opens a new inner scope
+  - `pop()` → closes the current inner scope (always in `finally`)
 
-### A1 — The Keyword Table
+- [ ] **`OSlangType` enum** — shared by TypeChecker and Interpreter:
+  - `INT`, `FLOAT`, `BOOL`, `STRING`, `SEMAPHORE`, `PROCESS`, `VOID`
+  - `ENUM` carries the enum name — `ENUM("State")` ≠ `ENUM("Day")` (name equivalence, Sebesta §6.15)
 
-Build this table first. The lexer reads characters to form a candidate identifier, then checks here. A match emits the keyword token instead of `IDENT`.
+- [ ] **`RuntimeValue` tagged union** — produced by Tuana's evaluator, consumed by Ferhat's executor:
+  - `int` → Java `int`
+  - `float` → Java `double`
+  - `bool` → Java `boolean`
+  - `string` → Java `String`
+  - `semaphore` → `SemaphoreValue { int counter; Queue<ProcessHandle> waitQueue; }`
+  - `enum value` → `EnumValue { String typeName; String memberName; int ordinal; }`
+  - `process` → `ProcessHandle { String name; int burst; int remaining; int priority; int arrival; ProcessState state; }`
 
-```java
-private static final Map<String, TokenType> KEYWORDS = new HashMap<>();
-static {
-    KEYWORDS.put("int",        TokenType.KW_INT);
-    KEYWORDS.put("float",      TokenType.KW_FLOAT);
-    KEYWORDS.put("bool",       TokenType.KW_BOOL);
-    KEYWORDS.put("string",     TokenType.KW_STRING);
-    KEYWORDS.put("semaphore",  TokenType.KW_SEMAPHORE);
-    KEYWORDS.put("process",    TokenType.KW_PROCESS);
-    KEYWORDS.put("system",     TokenType.KW_SYSTEM);
-    KEYWORDS.put("enum",       TokenType.KW_ENUM);
-    KEYWORDS.put("static",     TokenType.KW_STATIC);
-    KEYWORDS.put("func",       TokenType.KW_FUNC);
-    KEYWORDS.put("if",         TokenType.KW_IF);
-    KEYWORDS.put("elif",       TokenType.KW_ELIF);
-    KEYWORDS.put("else",       TokenType.KW_ELSE);
-    KEYWORDS.put("while",      TokenType.KW_WHILE);
-    KEYWORDS.put("return",     TokenType.KW_RETURN);
-    KEYWORDS.put("run",        TokenType.KW_RUN);
-    KEYWORDS.put("add",        TokenType.KW_ADD);
-    KEYWORDS.put("FCFS",       TokenType.KW_FCFS);
-    KEYWORDS.put("SJF",        TokenType.KW_SJF);
-    KEYWORDS.put("SRTF",       TokenType.KW_SRTF);
-    KEYWORDS.put("RR",         TokenType.KW_RR);
-    KEYWORDS.put("PRIORITY",   TokenType.KW_PRIORITY);
-    KEYWORDS.put("processes",  TokenType.KW_PROCESSES);
-    KEYWORDS.put("scheduler",  TokenType.KW_SCHEDULER);
-    KEYWORDS.put("quant",      TokenType.KW_QUANT);
-    KEYWORDS.put("burst",      TokenType.KW_BURST);
-    KEYWORDS.put("priority",   TokenType.KW_PRIORITY_F);
-    KEYWORDS.put("arrival",    TokenType.KW_ARRIVAL);
-    KEYWORDS.put("until",      TokenType.KW_UNTIL);
-    KEYWORDS.put("state",      TokenType.KW_STATE);
-    // Boolean literals enter through the keyword table
-    // They emit BOOL_LIT, not a grammar keyword — README §5.24 Step 6 Issue 4
-    KEYWORDS.put("true",       TokenType.BOOL_LIT);
-    KEYWORDS.put("false",      TokenType.BOOL_LIT);
-}
-```
+- [ ] **`ReturnException`** — Java exception used as a control-flow signal for `return` statements; caught only at function call boundary
 
-**Sebesta §4.2:** Keywords are recognized by checking candidate identifiers against this table after the identifier-reading state completes. `true` and `false` follow the same path — they produce `BOOL_LIT` rather than `IDENT`, consistent with how every other literal type is handled.
+- [ ] **Tick trace output format** — agree exactly what each line looks like, e.g.:
+  ```
+  [tick  1] RUNNING: Producer
+  [tick  2] RUNNING: Producer  |  wait(mutex): BLOCKED
+  [tick  3] RUNNING: Consumer
+  ```
 
-### A2 — The Scan Loop
+- [ ] **Create skeleton files** (empty classes with method stubs):
+  - `TypeChecker.java`
+  - `Interpreter.java`
+  - `Environment.java`
+  - `RuntimeValue.java`
 
-Implement `nextToken()` (or `tokenize()` returning the full list). Work through these cases in order — each one adds a new branch:
-
-**A2.1 — Whitespace and newlines**
-
-Skip spaces, tabs, and `\r`. Increment `line` counter on `\n`. No token emitted.
-
-**A2.2 — Comments (`//`)**
-
-On `/`, peek next char. If also `/`, advance until `\n` or EOF — no token. If not `/`, emit `SLASH`. No block comments in OSlang (README §5.24 Step 6 Issue 3).
-
-**A2.3 — IDENT and keywords**
-
-On a letter or `_`, accumulate while the character is a letter, digit, or `_`. Look up in the keyword table. Emit keyword token if found, `IDENT` otherwise.
-
-```
-Pattern: [a-zA-Z_][a-zA-Z0-9_]*
-```
-
-**A2.4 — INT_LIT and FLOAT_LIT**
-
-On a digit, accumulate digits. After the run, peek: if next is `.` AND the char after that is also a digit, consume `.`, accumulate fractional digits, emit `FLOAT_LIT`. Otherwise emit `INT_LIT`.
-
-```
-INT_LIT   pattern: [0-9]+
-FLOAT_LIT pattern: [0-9]+ '.' [0-9]+
-```
-
-`.5` and `5.` are NOT valid — both sides of the dot require at least one digit (README §5.24 Step 3). This prevents ambiguity with the `.` in `p.state`.
-
-**A2.5 — STRING_LIT**
-
-On `"`, accumulate until closing `"`. Handle escape sequences: `\"` `\\` `\n` `\t`. A newline before the closing `"` is a lexer error — multi-line strings are not supported (README §5.24 Step 6 Issue 2).
-
-```
-Pattern: '"' { any_char_except_quote_and_newline | '\' ( '"' | '\' | 'n' | 't' ) } '"'
-```
-
-**A2.6 — Operators (maximal munch)**
-
-Always consume the longest valid token. The ambiguous cases where the first character alone is not enough:
-
-| First char | Peek next | Emit |
-|---|---|---|
-| `<` | `-` | `ARROW` (`<-`) |
-| `<` | `=` | `LEQ` (`<=`) |
-| `<` | else | `LT` (`<`) |
-| `-` | `>` | `ARROW_RETURN` (`->`) |
-| `-` | else | `MINUS` (`-`) |
-| `=` | `=` | `EQ` (`==`) |
-| `!` | `=` | `NEQ` (`!=`) |
-| `!` | else | `NOT` (`!`) |
-| `&` | `&` | `AND` (`&&`) |
-| `\|` | `\|` | `OR` (`\|\|`) |
-
-Single-character tokens (`+`, `*`, `/`, `%`, `>`, `(`, `)`, `{`, `}`, `[`, `]`, `,`, `;`, `:`, `.`) need no peeking.
-
-**A2.7 — Unknown characters**
-
-Any unmatched character is a lexer error. Emit a message with line number and character. Halt on first error for Part 1.
-
-### A3 — Error Message Format
-
-```
-[Lexer Error] Line 7: Unexpected character '@'
-[Lexer Error] Line 12: Unterminated string literal
-[Lexer Error] Line 3: Invalid escape sequence '\q' in string literal
-```
-
-### A4 — Test the Lexer Standalone
-
-Use `--dump-tokens` to verify the output by hand before the parser is ready:
-
-| Input | Expected tokens |
-|---|---|
-| `static int maxTick <- 100;` | `KW_STATIC` `KW_INT` `IDENT(maxTick)` `ARROW` `INT_LIT(100)` `SEMICOLON` |
-| `print("hello\nworld");` | `IDENT(print)` `LPAREN` `STRING_LIT(hello\nworld)` `RPAREN` `SEMICOLON` |
-| `x <- y <= z < 5` | `IDENT(x)` `ARROW` `IDENT(y)` `LEQ` `IDENT(z)` `LT` `INT_LIT(5)` |
-| `// init\nsemaphore mutex <- 1;` | `KW_SEMAPHORE` `IDENT(mutex)` `ARROW` `INT_LIT(1)` `SEMICOLON` |
+- [ ] **Update `Main.java`** to call TypeChecker then Interpreter after the parser
 
 ---
 
-## Part B — Parser
+## STEP 2 — D1 design document additions (Split · write in parallel)
 
-**Owner: Partner B**
+Cross-review at the end of this step before moving to code.
 
-The parser takes the token list and builds an AST. It is a **recursive-descent parser** — one method per non-terminal in the EBNF grammar. The code structure mirrors the grammar exactly. This is the direct application of Sebesta §4.4.
+### Tuana writes
 
-### B1 — The Parser Skeleton
+- [ ] **D1 §4.4 Semantics — tick-step rules for simulation**
+  - Rule for one simulation tick: scheduler picks READY process → process executes one step → semaphore state may change → BLOCKED/READY transitions update
+  - `wait(s)` rule: if `s.counter > 0` → decrement and continue; else → add current process to `s.waitQueue`, mark process BLOCKED
+  - `post(s)` rule: if `s.waitQueue` non-empty → pop one process, mark it READY; else → increment `s.counter`
+  - Use a numbered small-step table OR inference-rule notation — pick one, be consistent (Sebesta §3.5)
 
-```java
-public class Parser {
-    private final List<Token> tokens;
-    private int pos = 0;
+- [ ] **D1 §4.5 Type System — main section**
+  - Strong typing statement: OSlang is strongly typed — no implicit narrowing, no type punning (Sebesta §6.14)
+  - Coercion table: `int → float` widening allowed; `float → int` is a compile-time error; no other implicit conversions
+  - Type equivalence: name equivalence for enums — `State == State` valid, `State == Day` is a type error even if both are enums (Sebesta §6.15)
+  - Parameter passing table: call-by-value for primitives, call-by-reference for `semaphore`/`process`
+  - `print(enumVar)` → prints member name string, not integer ordinal (locked decision)
 
-    public Parser(List<Token> tokens) { this.tokens = tokens; }
+- [ ] **D1 §4.8 Design rationale** — one paragraph per decision, each citing Sebesta:
+  - `<-` operator → Sebesta §7.7 (eliminates `=` vs `==` confusion, reliability)
+  - Static scoping → Sebesta §5.5 (readability, predictable variable resolution)
+  - No heap / no memory management → Sebesta §1.3 (reliability trade-off, scope control)
+  - `elif` keyword → Sebesta §3.3.1 (dangling-else avoidance, readability)
+  - Mandatory initializers → Sebesta §5.4.2, §5.4.3.2 (reliability, no undefined state)
+  - `post` over `signal` → Sebesta §1.3 (writability, UNIX signal ambiguity in OS domain)
+  - Fixed field order in `system` → Sebesta §1.3 (grammar enforces constraints, readability)
 
-    private Token peek()  { return tokens.get(pos); }
+### Ferhat writes
 
-    // Used for LL(2) disambiguation — see B3
-    private Token peek2() {
-        int next = pos + 1;
-        return next < tokens.size() ? tokens.get(next) : tokens.get(tokens.size() - 1);
-    }
+- [ ] **D1 §4.4 Semantics — `while` loop transition rules**
+  - Small-step rules: cond evaluates to false → loop exits; cond evaluates to true → body executes → repeat
+  - Use the same notation style Tuana uses in her section
 
-    private Token advance() {
-        Token t = tokens.get(pos);
-        if (pos < tokens.size() - 1) pos++;
-        return t;
-    }
+- [ ] **D1 §4.7 Expressions section**
+  - Full 7-level precedence table from the EBNF
+  - Associativity: all binary operators left-associative; unary right-associative; with code examples
+  - Short-circuit: `&&` stops at first false, `||` stops at first true — give a code example
+  - Operand evaluation order: left-to-right always
+  - Mixed-mode arithmetic: `int + float → float`; `float` assigned to `int` → compile error
+  - Enum coercion: int-to-enum allowed with compile-time check for literals
 
-    private Token expect(TokenType type) {
-        Token t = peek();
-        if (t.type != type) throw new ParseError(String.format(
-            "[Parser Error] Line %d: Expected %s but found '%s'", t.line, type, t.value));
-        return advance();
-    }
+### Both together
 
-    private boolean check(TokenType type) { return peek().type == type; }
-}
-```
+- [ ] Cross-read each other's D1 sections
+- [ ] Verify §4.4 semantics and §4.5 type system are consistent with each other
+- [ ] Verify notation style is consistent across both §4.4 sections
 
-### B2 — AST Node Classes
+---
 
-Define all nodes before writing parsing methods. Every node needs a `dump(int indent)` method for the `--dump-ast` output required by the handout.
+## STEP 3 — TypeChecker implementation (Tuana)
 
-```java
-// Top-level
-class ProgramNode       { List<ASTNode> declarations; }
-class StaticDeclNode    { String declType; String name; ASTNode init; }
-class SemaphoreDeclNode { String name; ASTNode init; }
-class EnumDeclNode      { String name; List<String> members; }
-class ProcessDeclNode   { String name; List<ProcessFieldNode> fields; BlockNode body; }
-class FuncDeclNode      { String name; List<ParamNode> params;
-                          String returnType; BlockNode body; }
-class SystemDeclNode    { String name; List<String> processes; SchedulerNode scheduler; }
-class AddStmtNode       { String systemName; String processName; ASTNode arrival; }
-class RunStmtNode       { String systemName; ASTNode until; /* null if omitted */ }
+Start with the `TypeChecker.java` skeleton from Step 1.
+One `check(ASTNode)` method that dispatches on node type.
+Symbol table: global scope holds all top-level names; function and process scopes are pushed/popped.
 
-// Helpers
-class ProcessFieldNode  { String fieldName; ASTNode value; }
-class ParamNode         { String name; String type; }
-class SchedulerNode     { String name; ASTNode quant; /* null unless RR */ }
+### Both together first
+- [ ] Confirm `OSlangType` enum covers all needed types
+- [ ] Confirm symbol table structure before Tuana starts
 
-// Statements
-class BlockNode         { List<ASTNode> statements; }
-class VarDeclStmtNode   { String declType; String name; ASTNode init; }
-class AssignStmtNode    { String target; ASTNode value; }
-class CallStmtNode      { String name; List<ASTNode> args; }
-class ReturnStmtNode    { ASTNode value; }
-class WhileStmtNode     { ASTNode condition; BlockNode body; }
-class IfStmtNode        { ASTNode condition; BlockNode thenBlock;
-                          List<ElifClauseNode> elifClauses; BlockNode elseBlock; }
-class ElifClauseNode    { ASTNode condition; BlockNode body; }
+### Tuana implements — declaration checks
 
-// Expressions
-class BinOpNode         { String op; ASTNode left; ASTNode right; }
-class UnaryOpNode       { String op; ASTNode operand; }
-class PostfixDotNode    { ASTNode object; String attribute; }
-class FuncCallNode      { String name; List<ASTNode> args; }
-class IdentNode         { String name; }
-class IntLitNode        { int value; }
-class FloatLitNode      { double value; }
-class BoolLitNode       { boolean value; }
-class StringLitNode     { String value; }
-```
+- [ ] **`ProcessDeclNode`**
+  - `burst` field is mandatory → type error if missing
+  - No duplicate field names (`burst`, `priority`, `arrival`)
+  - Field values must be positive integers
+  - Check process body block using a new scope
 
-### B3 — The LL(2) Disambiguation Point
+- [ ] **`SemaphoreDeclNode`**
+  - Initial value must be a non-negative integer (Sebesta §6.2 — integer type constraints)
 
-This is the most important parser detail. Two statement forms both begin with `IDENT`:
+- [ ] **`FuncDeclNode`**
+  - No duplicate parameter names
+  - Push a new scope with parameters bound to their declared types
+  - All `return` statements in the body must return the declared return type
+  - Pop scope after checking body
 
-```
-<assign_stmt>   ::= IDENT "<-" <expr> ";"      peek()=IDENT, peek2()=ARROW
-<call_stmt>     ::= IDENT "(" ... ")" ";"      peek()=IDENT, peek2()=LPAREN
-<var_decl_stmt> (enum type) ::= IDENT IDENT... peek()=IDENT, peek2()=IDENT
-```
+- [ ] **`EnumDeclNode`**
+  - No duplicate member names
+  - Member names must not collide with any already-declared global identifier
 
-The full dispatch for `parseStatement()`:
+- [ ] **`VarDeclStmtNode` / `StaticDeclNode`**
+  - Evaluate initializer type
+  - Initializer type must match declared type (or be a valid widening coercion)
 
-```java
-private ASTNode parseStatement() {
-    TokenType t  = peek().type;
-    TokenType t2 = peek2().type;
+- [ ] **`CallStmtNode` for `print`**
+  - Exactly one argument; any type is allowed
 
-    // Definite type keyword → var decl
-    if (t == KW_INT || t == KW_FLOAT || t == KW_BOOL || t == KW_STRING)
-        return parseVarDeclStmt();
-    // IDENT followed by another IDENT → enum-typed var decl
-    if (t == IDENT && t2 == IDENT)
-        return parseVarDeclStmt();
-    // IDENT followed by <- → assignment
-    if (t == IDENT && t2 == ARROW)
-        return parseAssignStmt();
-    // IDENT followed by ( → call as statement
-    if (t == IDENT && t2 == LPAREN)
-        return parseCallStmt();
+- [ ] **`SystemDeclNode`**
+  - All process names in the list must refer to already-declared processes
+  - If scheduler is `RR`, `quant` value must be `> 0`
 
-    if (t == KW_IF)     return parseIfStmt();
-    if (t == KW_WHILE)  return parseWhileStmt();
-    if (t == KW_RETURN) return parseReturnStmt();
+- [ ] **`RunStmtNode`**
+  - System name must refer to a declared system
+  - `until` value, if present, must be type `int`
 
-    Token tok = peek();
-    throw new ParseError(String.format(
-        "[Parser Error] Line %d: Unexpected token '%s' in statement", tok.line, tok.value));
-}
-```
+- [ ] **`AddStmtNode`**
+  - System name must refer to a declared system
+  - Process name must refer to a declared process
+  - `arrival` expression must be type `int`
 
-Document in D1 §4.3: *"The grammar is LL(2) at the statement level. The parser peeks one token ahead to distinguish assignment from call-as-statement, and to distinguish enum-typed variable declarations from other statement forms."* This is the direct application of Sebesta §4.4.1.
+### Ferhat implements — expression type checks
 
-### B4 — Top-Level Parsing
+- [ ] `BinOpNode`, `UnaryOpNode`, `FuncCallNode`, `AssignStmtNode`, `IfStmtNode`/`WhileStmtNode` conditions, `ReturnStmtNode`
 
-Start here. Stub all called methods as `throw new RuntimeException("TODO")` and fill in one by one.
+### Both together — integration
 
-```java
-public ProgramNode parseProgram() {
-    List<ASTNode> decls = new ArrayList<>();
-    while (!check(EOF)) decls.add(parseTopLevelDecl());
-    if (decls.isEmpty()) throw new ParseError(
-        "[Parser Error] Line 1: Empty program — at least one declaration is required");
-    return new ProgramNode(decls);
-}
+- [ ] Integrate both halves of the type checker
+- [ ] Run the 3 valid test programs — they must still pass with no type errors
+- [ ] Run the 5 malformed programs — must produce type errors or same parse errors as before
+- [ ] Write 2–3 new programs that specifically trigger type errors:
+  - Wrong type in assignment (e.g. `int x <- 3.14;`)
+  - Wrong argument to `wait` (e.g. `wait(5);` — not a semaphore)
+  - Negative semaphore initial value (e.g. `semaphore s <- -1;`)
 
-private ASTNode parseTopLevelDecl() {
-    switch (peek().type) {
-        case KW_STATIC:    return parseStaticDecl();
-        case KW_SEMAPHORE: return parseSemaphoreDecl();
-        case KW_ENUM:      return parseEnumDecl();
-        case KW_PROCESS:   return parseProcessDecl();
-        case KW_FUNC:      return parseFuncDecl();
-        case KW_SYSTEM:    return parseSystemDecl();
-        case KW_RUN:       return parseRunStmt();
-        case IDENT:
-            if (peek2().type == DOT) return parseAddStmt(); // IDENT "." "add" (...)
-        default:
-            Token t = peek();
-            throw new ParseError(String.format(
-                "[Parser Error] Line %d: Unexpected token '%s' at top level", t.line, t.value));
-    }
-}
-```
+---
 
-### B5 — Declarations
+## STEP 4 — Interpreter implementation (Split)
 
-Translate each grammar rule from README §5.24 Steps 2 and 5 directly. The pattern is always: `expect()` terminals, recurse for non-terminals, return the node.
+Start with the `Interpreter.java` skeleton from Step 1.
+Two main methods: `evaluate(ASTNode) → RuntimeValue` for expressions, `execute(ASTNode)` for statements.
 
-**`parseStaticDecl()`** — grammar: `"static" <decl_type> IDENT "<-" <expr> ";"`
+### Both together first
+- [ ] Confirm `Environment` linked-list scope structure
+- [ ] Confirm `RuntimeValue` tagged union is complete
+- [ ] Confirm `ReturnException` propagation: thrown in `ReturnStmtNode`, caught only at `FuncCallNode`; scope pop always in `finally`
+- [ ] Confirm tick trace output format
 
-```java
-private StaticDeclNode parseStaticDecl() {
-    expect(KW_STATIC);
-    String type = parseDeclType();
-    String name = expect(IDENT).value;
-    expect(ARROW);
-    ASTNode init = parseExpr();
-    expect(SEMICOLON);
-    return new StaticDeclNode(type, name, init);
-}
-```
+### Tuana implements — expression evaluator
 
-**`parseDeclType()`** — grammar: `<simple_type> | IDENT`
+- [ ] **Literal nodes** — wrap raw value in `RuntimeValue`:
+  - `IntLitNode` → `RuntimeValue(int)`
+  - `FloatLitNode` → `RuntimeValue(double)`
+  - `BoolLitNode` → `RuntimeValue(boolean)`
+  - `StringLitNode` → `RuntimeValue(String)`
 
-```java
-private String parseDeclType() {
-    TokenType t = peek().type;
-    if (t == KW_INT || t == KW_FLOAT || t == KW_BOOL || t == KW_STRING)
-        return advance().value;
-    if (t == IDENT)
-        return advance().value; // enum type name — validated later by the type checker
-    Token tok = peek();
-    throw new ParseError(String.format(
-        "[Parser Error] Line %d: Expected a type name but found '%s'", tok.line, tok.value));
-}
-```
+- [ ] **`IdentNode`** → `environment.lookup(name)`
 
-**`parseEnumDecl()`** — grammar: `"enum" IDENT "{" IDENT { "," IDENT } "}"`
+- [ ] **`BinOpNode`**
+  - Evaluate left operand, evaluate right operand (left-to-right — locked decision)
+  - Arithmetic: if either operand is `float`, widen the other and return `double` (Sebesta §7.4)
+  - Relational (`<`, `>`, `<=`, `>=`): numeric operands only, return `boolean`
+  - Equality (`==`, `!=`): matching types only; enum name equivalence check
+  - Logical (`&&`, `||`): short-circuit — evaluate right only if result not yet determined (Sebesta §7.6)
 
-```java
-private EnumDeclNode parseEnumDecl() {
-    expect(KW_ENUM);
-    String name = expect(IDENT).value;
-    expect(LBRACE);
-    List<String> members = new ArrayList<>();
-    members.add(expect(IDENT).value);
-    while (check(COMMA)) { advance(); members.add(expect(IDENT).value); }
-    expect(RBRACE);
-    return new EnumDeclNode(name, members);
-}
-```
+- [ ] **`UnaryOpNode`**
+  - `!` → evaluate operand, return negated `boolean`
+  - Unary `-` → evaluate operand, return negated numeric value
 
-Follow the same direct-translation pattern for `parseSemaphoreDecl()`, `parseProcessDecl()`, `parseFuncDecl()`, `parseSystemDecl()`, `parseAddStmt()`, `parseRunStmt()`.
+- [ ] **`FuncCallNode`**
+  - Look up function declaration in environment
+  - Push new scope
+  - Bind each argument value to the corresponding parameter name
+  - Execute function body
+  - Catch `ReturnException` and extract its value
+  - Pop scope in `finally` — always, regardless of how body exits
+  - Return the extracted value
 
-### B6 — Statements
+- [ ] **`PostfixDotNode`**
+  - Evaluate the left-side object (must be a process handle)
+  - Read the named attribute: `state`, `burst`, `priority`, `arrival`
+  - Return the attribute value as a `RuntimeValue`
 
-**`parseBlock()`** — grammar: `"{" { <statement> } "}"`
+### Tuana implements — semaphore runtime
 
-```java
-private BlockNode parseBlock() {
-    expect(LBRACE);
-    List<ASTNode> stmts = new ArrayList<>();
-    while (!check(RBRACE) && !check(EOF)) stmts.add(parseStatement());
-    expect(RBRACE);
-    return new BlockNode(stmts);
-}
-```
+- [ ] **`wait(s)`**
+  - Resolve `s` to a `SemaphoreValue` from the environment
+  - If `s.counter > 0` → decrement `s.counter`, current process continues
+  - Else → add current `ProcessHandle` to `s.waitQueue` (FIFO — use `Queue`, not `Stack`), mark process BLOCKED, yield CPU
 
-**`parseIfStmt()`** — grammar: `"if" "(" <expr> ")" <block> { "elif" ... } [ "else" ... ]`
+- [ ] **`post(s)`**
+  - Resolve `s` to a `SemaphoreValue`
+  - If `s.waitQueue` non-empty → pop the front process, mark it READY, do not increment counter
+  - Else → increment `s.counter`
 
-```java
-private IfStmtNode parseIfStmt() {
-    expect(KW_IF); expect(LPAREN);
-    ASTNode cond = parseExpr();
-    expect(RPAREN);
-    BlockNode thenBlock = parseBlock();
+### Tuana implements — schedulers
 
-    List<ElifClauseNode> elifClauses = new ArrayList<>();
-    while (check(KW_ELIF)) {
-        advance(); expect(LPAREN);
-        ASTNode elifCond = parseExpr();
-        expect(RPAREN);
-        elifClauses.add(new ElifClauseNode(elifCond, parseBlock()));
-    }
+- [ ] **SJF** (non-preemptive)
+  - Pick the READY process with the smallest `burst` value
+  - Once a process is RUNNING, do not re-run the scheduler until it finishes or blocks
 
-    BlockNode elseBlock = null;
-    if (check(KW_ELSE)) { advance(); elseBlock = parseBlock(); }
+- [ ] **SRTF** (preemptive)
+  - At every tick, pick the READY process with the smallest *remaining* burst
+  - If a newly READY process has smaller remaining burst than the currently RUNNING one, preempt
 
-    return new IfStmtNode(cond, thenBlock, elifClauses, elseBlock);
-}
-```
+- [ ] **RR** (round-robin)
+  - Maintain a circular ready queue
+  - Track remaining quantum per process
+  - On quantum expiry → move process to back of ready queue with fresh quantum
+  - On mid-quantum finish → release CPU immediately, next process starts next tick
+  - On mid-quantum block → process gets fresh quantum when it re-enters ready queue (locked decision from Step 0)
 
-`parseWhileStmt()`, `parseReturnStmt()`, `parseAssignStmt()`, `parseCallStmt()`, `parseVarDeclStmt()` all follow the same direct-translation pattern.
+### Tuana implements — `add` statement runtime
 
-### B7 — Expressions (the Precedence Cascade)
+- [ ] At the tick matching the `arrival` value, inject the process into the system's ready queue
+- [ ] Runtime error if the `arrival` tick has already passed when `add` is executed
 
-Translate the precedence cascade from README §5.24 Step 3 directly — one method per level. Every binary level follows the identical while-loop pattern.
+### Ferhat implements — statement executor + simulation engine
 
-```java
-private ASTNode parseExpr()            { return parseOrExpr(); }
+- [ ] `VarDeclStmtNode`, `AssignStmtNode`, `IfStmtNode`, `WhileStmtNode`, `ReturnStmtNode`, `print` handler, `BlockNode`
+- [ ] Tick loop, ready queue management, FCFS scheduler, PRIORITY scheduler, tick trace printing
 
-// <or_expr> ::= <and_expr> { "||" <and_expr> }
-private ASTNode parseOrExpr() {
-    ASTNode left = parseAndExpr();
-    while (check(OR)) { String op = advance().value; left = new BinOpNode(op, left, parseAndExpr()); }
-    return left;
-}
+### Both together — integration
 
-// <and_expr> ::= <equality_expr> { "&&" <equality_expr> }
-private ASTNode parseAndExpr() {
-    ASTNode left = parseEqualityExpr();
-    while (check(AND)) { String op = advance().value; left = new BinOpNode(op, left, parseEqualityExpr()); }
-    return left;
-}
+- [ ] Integrate all interpreter parts
+- [ ] Run the full producer-consumer example end to end
+- [ ] Hand-trace the first 5 ticks on paper and verify the trace output matches
+- [ ] Run all valid test programs and confirm they produce sensible output
 
-// parseEqualityExpr, parseRelationalExpr, parseAdditiveExpr,
-// parseMultiplicativeExpr — all follow the identical while-loop pattern.
+---
 
-// <unary_expr> ::= ( "!" | "-" ) <unary_expr> | <postfix_expr>
-private ASTNode parseUnaryExpr() {
-    if (check(NOT) || check(MINUS)) {
-        String op = advance().value;
-        return new UnaryOpNode(op, parseUnaryExpr()); // right-recursive — intentional
-    }
-    return parsePostfixExpr();
-}
+## STEP 5 — Final tests + individual deliverables
 
-// <postfix_expr> ::= <primary> [ "." <process_attr> ]
-private ASTNode parsePostfixExpr() {
-    ASTNode node = parsePrimary();
-    if (check(DOT)) { advance(); return new PostfixDotNode(node, parseProcessAttr()); }
-    return node;
-}
+### Both together
 
-// <primary> ::= <literal> | IDENT [ "(" [ <arg_list> ] ")" ] | "(" <expr> ")"
-private ASTNode parsePrimary() {
-    Token t = peek();
-    switch (t.type) {
-        case INT_LIT:    advance(); return new IntLitNode(Integer.parseInt(t.value));
-        case FLOAT_LIT:  advance(); return new FloatLitNode(Double.parseDouble(t.value));
-        case BOOL_LIT:   advance(); return new BoolLitNode(t.value.equals("true"));
-        case STRING_LIT: advance(); return new StringLitNode(t.value);
-        case IDENT:
-            advance();
-            if (check(LPAREN)) {
-                advance();
-                List<ASTNode> args = new ArrayList<>();
-                if (!check(RPAREN)) {
-                    args.add(parseExpr());
-                    while (check(COMMA)) { advance(); args.add(parseExpr()); }
-                }
-                expect(RPAREN);
-                return new FuncCallNode(t.value, args);
-            }
-            return new IdentNode(t.value);
-        case LPAREN:
-            advance();
-            ASTNode inner = parseExpr();
-            expect(RPAREN);
-            return inner;
-        default:
-            throw new ParseError(String.format(
-                "[Parser Error] Line %d: Unexpected token '%s' in expression", t.line, t.value));
-    }
-}
-```
+- [ ] Add 3 new programs to D3:
+  - One that shows a type error caught at compile time
+  - One that runs with SJF or SRTF and shows the tick trace
+  - One that uses an enum variable, prints it, and shows the member name in output
+- [ ] Update D3 test report with new programs and their expected output
+- [ ] Final end-to-end check: compile all Java files, run all programs, no crashes
+- [ ] Update D6 contribution report to reflect Part 2 work split
 
-**Why the loop is left-associative:** The while loop folds left: `a || b || c` → `BinOp(||, BinOp(||, a, b), c)`. The grammar's `{ }` repetition is neutral on associativity — Sebesta §3.3.2 p.127 is explicit about this. The left fold is the parser enforcing the design decision from README §5.13.
+### Tuana — individual
 
-**Why unary recursion is right-associative:** `parseUnaryExpr()` recurses on itself after consuming the operator. `!!x` → `UnaryOp(!, UnaryOp(!, x))`. This is correct — unary operators always bind right-to-left.
+- [ ] **D4 AI journal** — new dated entries for Part 2 sessions; include what was accepted/rejected from each session
+- [ ] **D5 retrospective** — your own reflection:
+  - What was harder than expected?
+  - What would you do differently if starting over?
+  - What had to be scoped out?
+  - What was the single hardest design decision and why?
+  - Self-assessment using the rubric (A/B/C/D per dimension with one-sentence justification each)
 
-### B8 — AST Dump Output
+### Ferhat — individual
 
-The handout D2 requires `--dump-ast`. Implement `dump(int indent)` on every node. Indented text is sufficient:
+- [ ] D4 AI journal entries
+- [ ] D5 retrospective
+
+---
+
+## STEP 6 — Exam prep (Both · before 28 May)
+
+- [ ] **Tuana**: be able to explain Ferhat's statement executor and simulation engine code
+- [ ] **Ferhat**: be able to explain Tuana's type checker declaration checks, expression evaluator, and semaphore runtime
+- [ ] **Both**: hand-trace the producer-consumer example for the first 5 ticks on paper
+- [ ] **Both**: write the operational semantics rules for `while` and `wait`/`post` from memory
+- [ ] **Both**: answer "why did you choose X over Y" for every decision in §4.8
+
+---
+
+## Submission file checklist
 
 ```
-ProgramNode
-  StaticDeclNode type=int name=maxTick
-    IntLitNode 100
-  FuncDeclNode name=isBlocked returns=bool
-    ParamNode p:process
-    BlockNode
-      ReturnStmtNode
-        BinOpNode ==
-          PostfixDotNode .state
-            IdentNode p
-          IdentNode blocked
-```
-
-### B9 — Error Message Format
-
-Every parse error must include the line number:
-
-```
-[Parser Error] Line 5: Expected ';' but found '}'
-[Parser Error] Line 12: Unexpected token 'float' at top level
-[Parser Error] Line 8: Expected a type name but found '42'
-[Parser Error] Line 1: Empty program — at least one declaration is required
+D1   OSlang_D1_P2.pdf
+D2   source/
+       TokenType.java
+       Token.java
+       Lexer.java
+       AST.java
+       Parser.java
+       TypeChecker.java      ← Tuana (declarations) + Ferhat (expressions)
+       Interpreter.java      ← Tuana (evaluator, semaphore, schedulers) + Ferhat (executor, engine)
+       Environment.java      ← Both (agreed interface)
+       RuntimeValue.java     ← Both (agreed structure)
+       Main.java             ← updated
+D3   OSlang_D3_P2.pdf
+D4   OSlang_D4_P2_Tuana.pdf
+D5   OSlang_D5_P2_Tuana.pdf
+D6   OSlang_D6_P2.pdf
 ```
 
 ---
 
-## Integration
-
-Wire both components in `Main.java`:
-
-```java
-public class Main {
-    public static void main(String[] args) throws IOException {
-        if (args.length == 0) {
-            System.err.println("Usage: Main <file.osl> [--dump-tokens | --dump-ast]");
-            System.exit(1);
-        }
-        String source = Files.readString(Path.of(args[0]));
-        Lexer lexer = new Lexer(source);
-        List<Token> tokens = lexer.tokenize();
-
-        if (args.length > 1 && args[1].equals("--dump-tokens")) {
-            tokens.forEach(System.out::println);
-            return;
-        }
-
-        Parser parser = new Parser(tokens);
-        ProgramNode ast = parser.parseProgram();
-
-        if (args.length > 1 && args[1].equals("--dump-ast")) {
-            ast.dump(0);
-        } else {
-            System.out.println("OK — parsed successfully.");
-        }
-    }
-}
-```
-
-**D2 README build and run commands** (required by the handout):
-
-```
-javac -d out src/*.java
-java -cp out Main program.osl               # parse only
-java -cp out Main program.osl --dump-ast    # parse and print AST
-java -cp out Main program.osl --dump-tokens # print token stream only
-```
-
----
-
-## D1 Writing Guide
-
-### Partner A writes — §4.2 Lexical Structure
-
-Cover every token category with its pattern:
-
-| Category | Pattern | Examples |
-|---|---|---|
-| `IDENT` | `[a-zA-Z_][a-zA-Z0-9_]*` | `x`, `mutex`, `P1` |
-| `INT_LIT` | `[0-9]+` | `0`, `42`, `100` |
-| `FLOAT_LIT` | `[0-9]+ '.' [0-9]+` | `3.14`, `0.5` |
-| `BOOL_LIT` | `true` or `false` | `true`, `false` |
-| `STRING_LIT` | `'"' { char or escape } '"'` | `"hello"`, `"line\n"` |
-
-Then list: all reserved keywords (from README §5.24 Step 5), all operators with the maximal-munch disambiguation table, separators, and the comment rule (`//` to end of line, no block comments).
-
-### Partner B writes — §4.3 Syntax
-
-Paste the complete EBNF from README §5.24 Steps 1–5. Add three annotations:
-
-- **LL(2) disambiguation:** where and why — the `peek2()` logic at the statement level (Sebesta §4.4.1).
-- **Left-associativity:** grammar uses `{ }` repetition (neutral per Sebesta §3.3.2 p.127); parser loop enforces left folding (README §5.13).
-- **No dangling-else:** every branch body is a mandatory `<block>` (Sebesta §3.3.1.4).
-
----
-
-## D3 Test Programs
-
-### Three valid programs
-
-Each must exercise: at least one control structure, the enum or process structured type, at least one function definition and call, and at least one domain-specific construct (`run` or `add`). Must parse successfully — execution not required for Part 1.
-
-### Five malformed programs
-
-**Partner A (lexer errors):**
-- Unclosed string: `print("hello;` → `[Lexer Error] Line N: Unterminated string literal`
-- Invalid character: `int x <- 5@3;` → `[Lexer Error] Line N: Unexpected character '@'`
-- Bad float: `float f <- 3.;` → document whatever your lexer produces
-
-**Partner B (parser errors):**
-- Missing semicolon: `static int x <- 5` → `[Parser Error] Line N: Expected ';' but found EOF`
-- Function missing `->`: `func f() { return 1; }` → `[Parser Error] Line N: Expected '->' ...`
-- `if` without braces: `if (x > 0) x <- 1;` → `[Parser Error] Line N: Expected '{' ...`
-
----
-
-## Exam Reference Table
-
-Maps every implementation decision to the Sebesta section each partner must know for the exam on 14 May.
-
-| Decision | Partner | Sebesta |
-|---|---|---|
-| Lexeme vs token | A | §4.2 |
-| State transition diagrams for lexer | A | §4.2 |
-| Keywords recognized in lexer, not grammar | A | §4.2, §3.3.2 |
-| `true`/`false` as `BOOL_LIT` tokens not grammar keywords | A | §3.3.2 (Issue 4 in README) |
-| String — single-line restriction, escape sequences | A | §6.3, §1.3 |
-| Maximal munch — `<-` vs `<=` vs `<` | A | §4.2 |
-| Recursive descent — one method per non-terminal | B | §4.4 |
-| LL(2) disambiguation at statements | B | §4.4.1 |
-| Left-associativity via loop, not left recursion | B | §3.3.2 p.127, §5.13 |
-| Right-associativity of unary via recursion | B | §3.3.2, §7.2 |
-| Dangling-else absent — mandatory blocks | B | §3.3.1.4 |
-| Mandatory initializer in var declarations | B | §5.4.2, §5.4.3.2 |
-| Assignment as statement only, never expression | B | §7.7.5 |
-| `elif` as single keyword token | B | §5.23, design decision |
-
----
-
-*Last updated: 8 May 2026.*
+*Last updated: 22 May 2026*
