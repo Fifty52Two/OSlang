@@ -673,79 +673,49 @@ This section is filled in as decisions are locked. Each decision will record: th
 
 ---
 
-## PART 2 — Round 8 decisions (locked 20 May 2026)
+## PART 2 — Decisions required by 22 May
 
-### Round 8 — Type system, semantics, and runtime behavior (Part 2)
+### Round 8 — Semantics and expressions (Sebesta Ch. 3, 7)
 
 - [x] **5.27 Parameter-passing mode** — **Pass by value for primitives; always pass by reference for `semaphore` and `process`.**
   - Primitives (`int`, `float`, `bool`, `string`, `enum`) — callee gets a copy; caller's variable is never affected.
   - `semaphore` and `process` — always by reference. They are shared OS resources; reference semantics are the only meaningful mode.
-  - No user-facing syntax for this — determined entirely by the type. No `&` symbol, no keyword.
+  - No user-facing syntax — determined entirely by the type. No `&` symbol, no keyword.
 
-  Exam justification: Sebesta §8.3.1 — pass-by-value protects caller data, strong reliability default. §8.3 — when the parameter is a shared resource by domain definition (semaphore, process), reference semantics are not a choice but a requirement.
+  Sebesta §8.3.1 — pass-by-value protects caller data, strong reliability default. §8.3 — when the parameter is a shared resource by domain definition, reference semantics are not a choice but a requirement.
 
-- [x] **5.28 Short-circuit evaluation** — **Yes — both `&&` and `||` are short-circuit.**
-  - `&&` — if left operand is `false`, right operand is **not evaluated**. Result is `false`.
-  - `||` — if left operand is `true`, right operand is **not evaluated**. Result is `true`.
-  - Both operands are only evaluated when the left operand does not determine the result.
+- [x] **5.28 Short-circuit evaluation** — **Yes — both `&&` and `||` short-circuit.**
+  - `&&` — if left operand is `false`, right operand is not evaluated. Result is `false`.
+  - `||` — if left operand is `true`, right operand is not evaluated. Result is `true`.
 
-  Exam justification: Sebesta §7.6 — short-circuit evaluation avoids unnecessary computation. If the result is already determined by the left operand, evaluating the right operand wastes resources and may cause unintended side effects.
+  Sebesta §7.6 — short-circuit avoids unnecessary computation and prevents unintended side effects from the right operand.
 
-- [x] **5.29 Operand evaluation order** — **Left to right.**
-  - For expressions involving only primitive types this order has no observable effect — primitives are pass-by-value, no side effects possible.
-  - The order matters when operands involve `semaphore` or `process` — because they are pass-by-reference and `wait`/`post` calls have real side effects on shared state.
-  - Left-to-right is consistent with our left-associativity decision (§5.13) — same mental model, no surprises.
+- [x] **5.29 Operand evaluation order** — **Left to right, always.**
+  - For primitive-only expressions this has no observable effect — pass-by-value means no side effects.
+  - Order matters when operands involve `semaphore` or `process` — `wait`/`post` have real side effects on shared state.
+  - Consistent with left-associativity decision (§5.13) — same mental model throughout.
 
-  Exam justification: Sebesta §7.5 — when operands have side effects (as semaphore operations do), evaluation order must be defined to guarantee deterministic behavior. Left-to-right is consistent with Java's guarantee of the same.
+  Sebesta §7.5 — when operands have side effects, evaluation order must be defined to guarantee deterministic behavior.
+
+- [x] **5.36 Operational semantics constructs** — **`while` loop and `wait(s)`.**
+  - `while` — classic construct, well-known form, expected by examiner.
+  - `wait(s)` — domain-specific, non-trivial: two possible outcomes (block or continue).
+  - Formal write-up goes in D1 §4.4.
+
+  Sebesta §3.5 — operational semantics describes meaning by showing how a construct changes the state of an abstract machine.
+
+---
+
+### Round 9 — Type system (Sebesta Ch. 6)
 
 - [x] **5.30 Default value for `priority` when omitted** — **`0` (lowest priority).**
-  - If `priority` is not specified in a process declaration, it defaults to `0`.
   - Higher integer = higher priority (e.g. `priority: 5` beats `priority: 2`).
   - A process with no declared priority is the least important in the system.
 
-  Exam justification: Sebesta §5.4.3 — implicit default values must have a clear, domain-consistent meaning. Unspecified priority naturally means "not important" in OS scheduling. Improves writability (§1.3.2) — the user does not have to write `priority: 0` every time for a background process.
+  Sebesta §5.4.3 — implicit defaults must have a clear, domain-consistent meaning. Improves writability (§1.3.2) — no need to write `priority: 0` every time for a background process.
 
-- [x] **5.31 Stop condition for `run` without `until`** — **Runs until all processes finished or deadlock detected.**
-  - No artificial tick cap. The interpreter checks after each tick — if all processes are in `finished` state, simulation stops naturally.
-  - If all processes are blocked and none can unblock (deadlock), simulation stops and prints a deadlock message.
-
-  ```
-  run(Sys1);          // stops when all processes finish, or deadlock detected
-  run(Sys1, until: 20);   // stops at tick 20 regardless
-  ```
-
-  Exam justification: Sebesta §3.5 — semantics should reflect the actual meaning of the construct. The natural meaning of "run until done" is done when finished, not done when a calculated number is reached. Improves reliability (§1.3.3) — no silent early termination that confuses the programmer.
-
-- [x] **5.32 `print` output format for enum** — **Prints the member name as a string, not the integer value.**
-  - If the programmer wants the integer, they explicitly assign to an `int` variable first and print that.
-
-  ```
-  enum State { ready, running, blocked, finished }
-  State s <- running;
-  print(s);       // prints:  running
-  int x <- s;
-  print(x);       // prints:  1
-  ```
-
-  Exam justification: Sebesta §1.3.1 readability — output should be meaningful to the reader without requiring them to know the internal integer mapping. The integer backing is an implementation convenience for the programmer (writability §1.3.2), not information that belongs in the output.
-
-- [x] **5.33 `add` behavior — creates an independent process instance.**
-  - `system Sys1(processes: [P1], scheduler: FCFS)` → one instance of P1, arrives at its declared `arrival` time.
-  - `Sys1.add(P1, arrival: 2)` → a second **independent instance** of P1, arrives at tick 2.
-  - Both instances run independently — each has its own local variables (stack-dynamic).
-  - Static variables are shared between all instances (static lifetime).
-
-  ```
-  process P1(burst: 3, arrival: 5) { }
-  system Sys1(processes: [P1], scheduler: FCFS);
-  Sys1.add(P1, arrival: 2);
-  // Result: two P1 instances — one starts at tick 2, one at tick 5
-  ```
-
-  Exam justification: Sebesta §5.4.3 — stack-dynamic local variables mean each process activation has its own binding environment. Two instances of the same process are two separate activations — independent by definition. Matches the OS concept of a process template (program) vs a process instance.
-
-- [x] **5.34 Strong typing rule — widening only, two implicit coercions.**
-  - OSlang is strongly typed with exactly two implicit coercions, both widening only:
+- [x] **5.31 Strong typing rule — widening only, two implicit coercions.**
+  - OSlang is strongly typed. Exactly two implicit coercions allowed, both widening only:
 
   | Coercion | Example | Safe? |
   |---|---|---|
@@ -763,37 +733,114 @@ This section is filled in as decisions are locked. Each decision will record: th
   | `int` literal in range → `enum` | ✅ allowed (§5.10) |
   | `int` expression → `enum` | ✅ compiles, runtime check |
 
-  Exam justification: Sebesta §6.12 — strong typing means every type error is detected either at compile time or runtime, never silently ignored. §6.13 — implicit coercion weakens strong typing; we limit it to widening conversions only where data loss is impossible. Narrowing (`float` → `int`) is rejected at compile time because it silently discards the fractional part — a reliability violation (§1.3.3).
+  Sebesta §6.12 — strong typing means every type error is detected at compile time or runtime, never silently ignored. §6.13 — narrowing coercion silently discards data — a reliability violation (§1.3.3).
 
-- [x] **5.35 Type equivalence (complete rule).**
-  - **Enums** — name equivalence. `enum A` and `enum B` are different types even if they have the same members.
-  - **Primitives** (`int`, `float`, `bool`, `string`) — name equivalence. `int` is only compatible with `int` (plus the two widening coercions from §5.34).
+- [x] **5.32 Type equivalence — name equivalence for all types.**
+  - **Primitives** — name equivalence. `int` only compatible with `int` (plus widening coercions above).
+  - **Enums** — name equivalence. `enum A` and `enum B` are different types even with identical members.
   - **`semaphore`** — its own type. Cannot be assigned to any other type. Exception: can be compared with `int` or another `semaphore` using `==`, `!=`, `<`, `>`, `<=`, `>=`.
-  - **`process`** — only compatible with `process`. Cannot be assigned to or compared with any other type.
+  - **`process`** — only compatible with `process`. Cannot be compared with any other type.
 
   ```
-  if (mutex == 0) { ... }         // ✅ semaphore vs int
-  if (mutex > empty) { ... }      // ✅ semaphore vs semaphore
-  if (mutex == true) { ... }      // ❌ type error
-  print(mutex);                   // ✅ prints current counter value as int
+  if (mutex == 0) { ... }      // ✅ semaphore vs int
+  if (mutex > empty) { ... }   // ✅ semaphore vs semaphore — meaningful for multi-path logic
+  if (mutex == true) { ... }   // ❌ type error
+  print(mutex);                // ✅ prints current counter value as int
   ```
 
-  Exam justification: Sebesta §6.15 — name equivalence is stricter than structural equivalence but eliminates a whole class of subtle bugs. A semaphore counter is an integer by definition, so comparing two semaphore counters is semantically meaningful — a controlled, domain-justified exception to strict name equivalence.
+  Sebesta §6.15 — name equivalence eliminates a class of subtle bugs where two types happen to look alike but mean different things. Semaphore vs semaphore and semaphore vs int comparisons are domain-justified exceptions — a semaphore counter is an integer by definition.
 
-- [x] **5.36 Operational semantics constructs** — **`while` loop and `wait(s)`.**
-  - Formal operational semantics for these two constructs will be written in D1 §4.4.
-  - `while` — classic construct, well-known operational form, expected by examiner.
-  - `wait(s)` — domain-specific, non-trivial state transition with two outcomes (block or continue).
+- [x] **5.33 `print` output format for enum** — **Prints the member name string, not the integer ordinal.**
+  - The ordinal is still used internally for comparisons and int-to-enum coercion — never shown via `print`.
+  - If the programmer wants the integer, they explicitly assign to `int` first.
 
-  Exam justification: Sebesta §3.5 — operational semantics describes meaning by showing how a construct changes the state of an abstract machine. These two constructs represent the general-purpose (while) and domain-specific (wait) pillars of OSlang.
+  ```
+  enum State { ready, running, blocked, finished }
+  State s <- running;
+  print(s);      // prints:  running
+  int x <- s;
+  print(x);      // prints:  1
+  ```
+
+  Sebesta §1.3.1 readability — output must be meaningful without knowing the internal integer mapping.
 
 ---
 
-## PART 2 — Still deferred
+### Round 10 — Runtime and simulation behavior (Sebesta Ch. 3, 5)
 
-- Design rationale paragraphs (D1 §4.8) — to be written in D1 document
-- Detailed scheduler attributes (RR quantum behavior, etc.) — to be decided during interpreter implementation
-- Operational semantics formal write-up (D1 §4.4) — to be written in D1 document
+- [x] **5.34 Stop condition for `run` without `until`** — **Runs until all processes finished or deadlock detected.**
+  - No artificial tick cap — interpreter checks after each tick.
+  - All processes `FINISHED` → simulation ends naturally.
+  - All processes `BLOCKED` and none can unblock → deadlock message printed, simulation ends.
+
+  ```
+  run(Sys1);             // stops when all processes finish, or deadlock detected
+  run(Sys1, until: 20);  // stops at tick 20 regardless
+  ```
+
+  Sebesta §3.5 — semantics should reflect actual meaning. "Run until done" means done when finished. Improves reliability (§1.3.3) — no silent early termination.
+
+- [x] **5.35 `add` behavior — creates an independent process instance.**
+  - `system Sys1(processes: [P1], scheduler: FCFS)` → one instance of P1, arrives at declared `arrival` time.
+  - `Sys1.add(P1, arrival: 2)` → a second independent instance of P1, arrives at tick 2.
+  - Each instance has its own local variables (stack-dynamic). Static variables are shared.
+  - Display name in trace: first instance is `P1`, second is `P1#1`.
+
+  ```
+  process P1(burst: 3, arrival: 5) { }
+  system Sys1(processes: [P1], scheduler: FCFS);
+  Sys1.add(P1, arrival: 2);
+  // Result: P1 starts at tick 2, P1#1 starts at tick 5
+  ```
+
+  Sebesta §5.4.3 — stack-dynamic local variables mean each activation has its own binding environment. Two instances of the same process are two separate activations. Matches the OS concept of process template vs process instance.
+
+- [x] **5.36 RR quantum behavior — real Round Robin, no wasted ticks.**
+  - Process that **finishes mid-quantum** → releases CPU immediately. No wasted ticks.
+  - Process that **exhausts its quantum** without finishing → moved to back of ready queue.
+  - At start of each tick: arrivals are processed first, then scheduler picks from front of queue.
+  - Newly arrived process joins back of queue — cannot jump ahead of processes already waiting.
+
+  ```
+  // quant: 2, P1 burst: 3, P2 burst: 3, P2 arrival: 3
+  tick 1 → P1 runs (quantum 1/2)
+  tick 2 → P1 runs (quantum 2/2) → quantum exhausted → P1 back of queue
+  tick 3 → P2 arrives → queue: [P1, P2] → P1 runs (quantum 1/2)
+  tick 4 → P1 runs (quantum 2/2) → quantum exhausted → back of queue
+  tick 5 → P2 runs (quantum 1/2)
+  ...
+  ```
+
+  Sebesta §3.5 — semantics must reflect real OS behavior. Real RR never holds the CPU for a finished process. Bounded waiting: every process gets a turn within `(n−1) × quantum` ticks.
+
+---
+
+### Round 11 — Type checker architecture (Sebesta Ch. 6)
+
+These three decisions fix the shared skeleton of `TypeChecker.java` before the work is split (Ferhat: expression + statement checking; Tuana: declaration + domain-specific checking). They are implementation-architecture decisions, agreed together so both halves plug in consistently — the same approach used earlier for the `Environment` and `RuntimeValue` APIs.
+
+- [x] **5.37 Compile-time type representation — single `OSlangType` class with a tag + optional enum fields.**
+  - One class with a `Kind` tag (`INT`, `FLOAT`, `BOOL`, `STRING`, `SEMAPHORE`, `PROCESS`, `VOID`, `ENUM`) plus two extra fields, `enumName` and `memberCount`, that are meaningful only when the kind is `ENUM`.
+  - Mirrors the existing `RuntimeValue` design (one class, one field per case) so the codebase stays uniform.
+  - `enumName` exists because §5.32 type equivalence is **name** equivalence — `Day` and `Month` are different types even with identical members, so equality of two enum types compares their names.
+  - `memberCount` exists because the §5.10 range check (`State bad <- 99;` is a compile-time error) needs to know the valid ordinal range `[0, memberCount-1]`.
+  - `equals()` is defined explicitly (not reference equality): kinds must match, and for `ENUM` the `enumName` must match too. `memberCount` is **not** part of equality — it is only used for the range check.
+
+  Sebesta §6.1 — a compile-time type is a distinct notion from a runtime value; keeping `OSlangType` separate from `RuntimeValue.Type` lets each carry only what its phase needs (the checker needs the enum name and member count; the interpreter does not).
+
+- [x] **5.38 Dispatch shape — `check()` for statements/declarations, `checkExpr()` for expressions.**
+  - `checkExpr(node)` always returns an `OSlangType` (the type of the expression); `check(node)` checks statements and declarations and returns nothing.
+  - Cleaner than one combined method, because statements have no type to return — a single method would have to return `OSlangType` and ignore it half the time.
+  - Mirrors the interpreter's `evaluate` / `execute` pair, and matches the work split (expression checking vs declaration/statement checking).
+
+  Sebesta §6.12 — type checking is the verification that each operation receives operands of compatible type; separating expression typing (which produces a type) from statement checking (which only verifies) keeps that responsibility explicit.
+
+- [x] **5.39 Symbol table — flat global map + pushed scope inside function/process bodies.**
+  - All top-level names — enums, processes, semaphores, functions, systems, static variables — live in a single global scope.
+  - A nested scope is pushed only when entering a function or process body (its parameters and local variables) and popped on exit.
+  - This reflects OSlang's actual scope shape: there is no deep nesting — effectively two levels, global and the inside of one function/process body. A full scope chain would be more general machinery than the language needs.
+
+  Sebesta §5.5 — static scoping resolves names by lexical structure; OSlang's structure is shallow, so a flat global plus a single pushed local scope is sufficient and is simpler to reason about and explain.
 
 ---
 
@@ -872,16 +919,25 @@ run(Sys1, until: 20);
 
 **Part 2 (due 22 May)**
 
-- [x] Round 8 — Part 2 design decisions locked (§5.27–§5.36)
-- [ ] D1 updated — §4.4 operational semantics written
-- [ ] D1 updated — §4.5 type system written
-- [ ] D1 updated — §4.6 expressions written
-- [ ] D1 updated — §4.8 design rationale written
-- [ ] Type checker implemented
-- [ ] Interpreter implemented
+- [x] Round 8 — Semantics and expressions locked (§5.27–§5.29, §5.36)
+- [x] Round 9 — Type system locked (§5.30–§5.33)
+- [x] Round 10 — Runtime and simulation behavior locked (§5.34–§5.36)
+- [x] Round 11 — Type checker architecture locked (§5.37–§5.39)
+- [x] `RuntimeValue.java` — shared value structure created
+- [x] `Environment.java` — scope chain created
+- [ ] `TypeChecker.java` — skeleton created
+- [ ] `Interpreter.java` — skeleton created
+- [ ] `Main.java` — updated to call type checker then interpreter
+- [ ] D1 updated — §4.4 operational semantics (`while` + `wait`)
+- [ ] D1 updated — §4.5 type system
+- [ ] D1 updated — §4.7 expressions (precedence, associativity, short-circuit)
+- [ ] D1 updated — §4.8 design rationale
+- [ ] Type checker implemented (expression checker + declaration checker)
+- [ ] Interpreter implemented (statement executor + simulation engine)
 - [ ] D3 updated — new test programs for type errors and interpreter output
-- [ ] D4 AI journal — Part 2 entries logged
+- [ ] D4 AI journal — Part 2 entries logged (min 6 new entries)
 - [ ] D5 retrospective written
+- [ ] D6 contribution report updated
 - [ ] Part 2 submitted on Teams
 
 ---
@@ -890,9 +946,14 @@ run(Sys1, until: 20);
 
 **Requirements:** Java 17 or later.
 
-**Compile:**
+**Compile (Part 1):**
 ```
-javac -d out src/TokenType.java src/Token.java src/Lexer.java src/AST.java src/Parser.java src/Main.java
+javac -d out TokenType.java Token.java Lexer.java AST.java Parser.java Main.java
+```
+
+**Compile (Part 2 — includes type checker and interpreter):**
+```
+javac -d out TokenType.java Token.java Lexer.java AST.java Parser.java RuntimeValue.java Environment.java TypeChecker.java Interpreter.java Main.java
 ```
 
 **Run — check for errors only:**
@@ -912,4 +973,4 @@ java -cp out Main program.osl --dump-ast
 
 ---
 
-*Last updated: 20 May 2026.*
+*Last updated: 21 May 2026.*
