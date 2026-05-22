@@ -140,8 +140,26 @@ public class Environment {
     }
 
     // -------------------------------------------------------------------------
-    // toString() — for debugging: prints all scopes from current to global
+    // snapshotLocalBindings() / restoreLocalBindings()
+    // Used by the simulation engine to persist per-process local variables
+    // across ticks (Decision Option B — each process keeps its own locals).
+    //
+    // Before a process step:
+    //   env.push()
+    //   env.restoreLocalBindings(savedLocals)   // re-populate from snapshot
+    // After the step:
+    //   Map<String,RuntimeValue> saved = env.snapshotLocalBindings()
+    //   env.pop()
     // -------------------------------------------------------------------------
+    public Map<String, RuntimeValue> snapshotLocalBindings() {
+        return new HashMap<>(current.bindings);
+    }
+
+    public void restoreLocalBindings(Map<String, RuntimeValue> snapshot) {
+        current.bindings.putAll(snapshot);
+    }
+
+
     @Override
     public String toString() {
         StringBuilder sb = new StringBuilder();
