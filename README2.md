@@ -1,39 +1,12 @@
-# OSlang
+# OSlang — Design Document & Decisions (Part 1 + Part 2)
 
-A small domain-specific language for declaring operating-system concepts — processes, semaphores, and schedulers — and simulating their execution.
+## 1. Domain
 
-> **Course project for CSE 341 (Concepts of Programming Languages), Gebze Technical University, Spring 2026.**
-> This document is a living design log. It grows as decisions are locked in. The eventual D1 design specification (the formal PDF deliverable) will be derived from this document.
+**OS simulator DSL.** OSlang lets a programmer declare processes, semaphores, and a scheduler, then run a deterministic tick-by-tick simulation that prints a human-readable trace.
 
----
+The justification for a DSL here is strong: OS abstractions — ready queues, semaphore wait lists, context switches — are invisible at runtime in real systems. Textbooks teach them with prose and hand-drawn diagrams. OSlang makes these constructs first-class syntax.
 
-## 1. What this project is
-
-We are designing our own small programming language and writing an interpreter for it. The language is called **OSlang**. It is a domain-specific language (DSL) for describing operating-system simulations.
-
-The course is structured around Sebesta's *Concepts of Programming Languages* (Chapters 1–7). The point of the project is not to build a production language — it is to make real language-design decisions, defend them in the vocabulary of the textbook, and implement them consistently.
-
-This is a **pair project**. Work is split 50/50 across both parts of the project (not necessarily within each part).
-
----
-
-## 2. What OSlang does
-
-OSlang lets a programmer declare:
-
-- **Processes** with attributes like priority and CPU burst.
-- **Semaphores** with initial counter values.
-- **Systems** that bundle processes together with a chosen scheduler.
-
-The interpreter then runs the system step by step ("tick by tick") under a chosen scheduling policy. It is a deterministic OS simulator — single-threaded, reproducible, inspectable. Concurrency is *simulated* by interleaving processes under interpreter control, not by actually running threads.
-
-The output of a run is a tick-by-tick trace showing which process ran at each moment, what semaphore operations happened, and which processes blocked or unblocked.
-
-### Why a DSL for this domain?
-
-Operating-system abstractions like ready queues, semaphore wait lists, and context switches are invisible at runtime in real systems. Textbooks teach them with prose and hand-drawn timing diagrams. Heavyweight teaching kernels (xv6, PintOS) require weeks of setup; industrial verification languages (TLA+, Promela) are far beyond an undergraduate course.
-
-OSlang fills the gap: a small declarative language where OS concepts are first-class syntax rather than buried in C structs and pthread calls. The DSL surface makes a producer-consumer setup readable in ten lines instead of fifty.
+The DSL surface makes a producer-consumer setup readable in ten lines instead of fifty.
 
 ---
 
@@ -95,155 +68,40 @@ This section is filled in as decisions are locked. Each decision will record: th
 
 ### Round 2 — Names, binding, scope, lifetime (Sebesta Ch. 5)
 
-- [x] **5.5 Identifier rules** — Letters, digits, underscore. Must start with a latin letter, must end with a letter or digit. **Case-sensitive** — `Producer` and `producer` are distinct identifiers.
+- [x] **5.5 Identifier rules** — Letters, digits, underscore. Must start with a letter or underscore. Case-sensitive. No length limit enforced by the lexer.
 
-  Pattern:
-  ```
-  [a-zA-Z][a-zA-Z0-9_]*[a-zA-Z0-9]   // length > 1
-  [a-zA-Z]                             // length 1 is also valid
-  ```
+  Sebesta §5.2 — identifiers should be unlimited length and case-sensitive for readability and writability.
 
-  | Identifier | Legal? |
-  |---|---|
-  | `producer` | ✅ |
-  | `Producer` | ✅ — distinct from `producer` |
-  | `P1` | ✅ |
-  | `my_process` | ✅ |
-  | `x` | ✅ |
-  | `my_process_1` | ✅ |
-  | `_internal` | ❌ starts with underscore |
-  | `1process` | ❌ starts with digit |
-  | `my_process_` | ❌ ends with underscore |
-  | `my-process` | ❌ hyphen not allowed |
+- [x] **5.6 Reserved words vs keywords** — All special names in OSlang are reserved. Users cannot redefine `int`, `process`, `wait`, `post`, `print`, or any other language keyword.
 
-  Exam justification: case-sensitivity follows the C-family tradition (Java, C, C#) we have already committed to with curly-brace syntax (5.2) and aligns with Sebesta §5.2's note that modern languages favor case-sensitive identifiers because predefined names use mixed case.
+  Sebesta §5.2 — reserving all keywords avoids ambiguity between user-defined and language-defined names.
 
-- [x] **5.6 Scoping** — **Static (lexical) scoping.**
-  - Variable lookup is resolved at compile time based on source code structure.
-  - Each process body has its own local scope.
-  - Functions have their own local scope.
-  - Global scope holds semaphore declarations, process declarations, function declarations, system declarations.
-  - A process cannot see variables declared inside another process.
-  - Exam justification: Sebesta §5.5 — static scoping is predictable, debuggable, and used by all modern languages.
+- [x] **5.7 Scope rule** — **Static (lexical) scoping.**
 
-- [x] **5.7 Lifetime of variables** — **Stack-dynamic for locals, static for globals. No heap-dynamic.**
+  Sebesta §5.5.1 — static scoping allows the type and binding of every variable to be determined by reading the source, prior to execution.
 
-  | Variable type | Lifetime | Declaration |
+- [x] **5.8 Scope levels** — Two levels only: global (top-level declarations) and local (inside a function or process body).
+
+  No nested functions, no closures. Keeps the scope chain trivially implementable: a single global map plus one pushed local map per call.
+
+- [x] **5.9 Variable lifetime** — Four cases:
+
+  | Variable type | Lifetime | Example |
   |---|---|---|
-  | Local variables in process body | Stack-dynamic | `int x <- 0;` inside process |
-  | Local variables in functions | Stack-dynamic | `int x <- 0;` inside func |
-  | Static variables | Static | `static int counter <- 0;` at top level |
-  | Semaphore declarations | Static | `semaphore mutex <- 1;` — implicitly static |
-  | Process declarations | Static | `process P1(...) { }` — implicitly static |
+  | `static` variable | Static — entire program execution | `static int counter <- 0;` |
+  | Semaphore declaration | Static (implicit) | `semaphore mutex <- 1;` |
+  | Process body local | Stack-dynamic — one activation per scheduled execution | `int temp <- 0;` inside process |
+  | Function body local | Stack-dynamic — one activation per call | `int x <- 0;` inside func |
 
-  No heap-dynamic — explicitly excluded. No memory management in scope.
+  Sebesta §5.4.3.1 — static variables are bound before execution and persist for its duration. §5.4.3.2 — stack-dynamic variables are allocated when the subprogram is called and deallocated on return.
 
-  ```
-  static int counter <- 0;
-  semaphore mutex <- 1;
+- [x] **5.10 Mandatory initializers** — Every variable declaration must include an initializer. `int x;` is a syntax error.
 
-  process Producer(burst: 3) {
-      int temp <- 0;
-      temp <- temp + 1;
-      counter <- counter + 1;
-      post(mutex);
-  }
-  ```
-
-- [x] **5.8 Type binding** — **Static binding.** Types are bound at declaration and never change.
-
-  Coercion rules:
-
-  | Expression | Result | Rule |
-  |---|---|---|
-  | `int + int` | `int` | no coercion |
-  | `float + float` | `float` | no coercion |
-  | `int + float` | `float` | int widened to float — no data loss |
-  | `float + int` | `float` | int widened to float — no data loss |
-  | `float` assigned to `int` variable | ❌ | compile time error — narrowing not allowed |
-
-  ```
-  int x <- 5;
-  float y <- 3.14;
-
-  float result <- x + y;   // OK — x widened to float, result is 8.14
-  x <- x + y;              // ERROR — cannot assign float to int variable
-  ```
+  Sebesta §5.4.1 — uninitialized variables are a common reliability problem. Mandatory initializers eliminate the entire class.
 
 ---
 
-### Round 3 — Type system (only what the parser needs)
-
-- [x] **5.9 Primitive types** — **`int`, `float`, `bool`, `string`, `semaphore`.** Domain types `semaphore` and `process` are also valid as parameter types in user-defined functions.
-
-  | Type | Example values |
-  |---|---|
-  | `int` | `0`, `1`, `42` |
-  | `float` | `3.14`, `0.5` |
-  | `bool` | `true`, `false` |
-  | `string` | `"hello"`, `"done"` |
-  | `semaphore` | primitive — `semaphore mutex <- 1;` |
-
-- [x] **5.10 Structured type** — **`enum` as first-class type in variable declarations, with two-layer range enforcement.**
-
-  **Enum declaration syntax:**
-  ```
-  enum Name {
-      member1,
-      member2,
-      member3
-  }
-  ```
-
-  - `enum` keyword, then a name, then a brace-delimited list of comma-separated member identifiers.
-  - Each member is implicitly assigned a non-negative integer starting from `0` in declaration order.
-  - At least one member is required.
-  - Trailing comma after the last member is **not** allowed.
-  - The enum name and member names follow the standard identifier rules (5.5) and are case-sensitive.
-  - Enum declarations are top-level only — they cannot appear inside process or function bodies.
-  - Member names live in the global namespace — collisions with other identifiers are a compile-time error.
-
-  **Enum types are first-class in variable and static declarations.** `State s <- ready;` is legal. The grammar accepts any `IDENT` as a type name in `<var_decl_stmt>` and `<static_decl>`; the type checker (Part 2) validates that the name refers to a declared enum.
-
-  ```
-  enum State {
-      ready,      // 0
-      running,    // 1
-      blocked,    // 2
-      finished    // 3
-  }
-
-  State s <- ready;       // ✅ enum member assigned to enum variable
-  State t <- s;           // ✅ enum-to-enum assignment — same type
-  int x <- blocked;       // ✅ enum to int — widening, always safe (x gets 2)
-  State u <- 1;           // ✅ compiles — int-to-enum coercion, checked at runtime (u gets running)
-  State bad <- 99;        // ❌ COMPILE-TIME ERROR — literal 99 is out of range [0, 3]
-  ```
-
-  **Two-layer range enforcement for int-to-enum assignments (Sebesta §6.13, §6.14):**
-
-  | Right-hand side | When checked | Rule |
-  |---|---|---|
-  | Enum member (`ready`, `blocked`, …) | — | Always valid; no check needed |
-  | Enum variable of the same type | — | Always valid; same range guaranteed |
-  | `INT_LIT` | **Compile time** | Rejected if literal ∉ `[0, memberCount-1]` |
-  | Integer expression or variable | **Runtime** | Error thrown if evaluated value ∉ `[0, memberCount-1]` |
-
-  **Type equivalence for enums — name equivalence (Sebesta §6.15).** Two enum types are compatible only if they have the same declared name. `Day` and `Month` are different types even if they have the same number of members. `Day d <- aMonthVar;` is a compile-time type error.
-
-  | Assignment | Result |
-  |---|---|
-  | `EnumType var <- enumMember` | ✅ always valid |
-  | `EnumType var <- sameTypeVar` | ✅ always valid |
-  | `EnumType var <- differentEnumVar` | ❌ compile-time type error |
-  | `EnumType var <- INT_LIT` in range | ✅ valid |
-  | `EnumType var <- INT_LIT` out of range | ❌ compile-time error |
-  | `EnumType var <- intExpression` | ✅ compiles; runtime error if out of range |
-  | `int var <- enumValue` | ✅ always valid — widening, no data loss |
-  | `EnumType var <- floatAnything` | ❌ compile-time error |
-  | `float var <- enumValue` | ❌ compile-time error |
-
-  Exam justification: Sebesta §6.4.1 identifies range validity as a core enum design issue. §6.13 establishes that type errors must be detected either statically or dynamically for strong typing. §6.14 notes that coercion weakens strong typing — we limit int-to-enum coercion to cases where the value is provably valid (literal) or checked at runtime (expression), which is a deliberate trade-off between writability and reliability (§1.6). §6.15 name equivalence prevents cross-enum assignment bugs that structural equivalence would silently allow.
+### Round 3 — Type system (Sebesta Ch. 6)
 
 - [x] **5.11 Type categories** — Three categories: primitive, built-in structured, user-defined structured.
 
@@ -313,363 +171,71 @@ This section is filled in as decisions are locked. Each decision will record: th
 
 - [x] **5.16 Semaphore declaration syntax** — **`semaphore Name <- N;`**
   - Initial value `N` — **mandatory**, non-negative integer.
-  - Uses `<-` — single-target binding, consistent with variable assignment.
+  - `<-` matches the assignment operator decision (§5.4) — one binding form throughout.
 
-  ```
-  semaphore mutex <- 1;
-  semaphore empty <- 5;
-  ```
+- [x] **5.17 System declaration syntax** — **`system Name(processes: [...], scheduler: TYPE);`**
+  - Process list is a bracketed comma-separated list of process names.
+  - Scheduler is one of: `FCFS`, `SJF`, `SRTF`, `PRIORITY`, `RR(quant: N)`.
+  - Only `RR` takes a parameter. All others are bare identifiers.
 
-- [x] **5.17 wait/post syntax** — **`wait(s);`** and **`post(s);`**, function-call style, one semaphore argument.
-  - `wait(s)` — P operation: decrement if `s > 0`, otherwise block.
-  - `post(s)` — V operation: unblock a waiting process or increment `s`.
-  - Why `post` not `signal`: `signal` is ambiguous in OS domain (also means UNIX signal handler).
+- [x] **5.18 Run statement syntax** — **`run(SystemName);`** or **`run(SystemName, until: N);`**
+  - `until: N` runs for exactly N ticks.
+  - Without `until`, the simulation runs until all processes finish or a tick limit is hit.
 
-  ```
-  wait(mutex);
-  x <- x + 1;
-  post(mutex);
-  ```
+- [x] **5.19 `add` statement syntax** — **`SystemName.add(ProcessName, arrival: N);`**
+  - Injects a second independent instance of a process into a running system.
+  - `arrival` is mandatory on `add` — unlike the declaration default.
 
-- [x] **5.18 System declaration syntax** — **`system Name(processes: [P1, P2, ...], scheduler: SchedType);`**
-  - `processes` — **mandatory**, at least one process. Empty `processes: []` is a parse error (a processless system has nothing to simulate).
-  - `scheduler` — **mandatory**.
-  - **Field order is fixed:** `processes` first, then `scheduler`. This differs from `process_decl` (§5.15) where field order is flexible. Rationale: a system declaration is a top-level configuration, so a uniform shape across the codebase is more important than writing flexibility (Sebesta §1.3.3 — readability favoured over writability for declarative configuration).
-  - Dynamic add: `Name.add(P, arrival: N)` — runtime error if add arrival < process declared arrival.
-  - `run(Name)` or `run(Name, until: N)` starts simulation.
+- [x] **5.20 `wait` / `post` as built-in calls** — **`wait(semName);`** and **`post(semName);`**
+  - Not user-definable functions. Reserved at the lexer level.
+  - `post` chosen over `signal` — `signal` is overloaded in the OS domain (UNIX signal handlers). `post` is unambiguous.
 
-  ```
-  system Sys1(processes: [P1, P2, P3], scheduler: FCFS);
-  Sys1.add(P4, arrival: 5);
-  run(Sys1, until: 20);
-  ```
+- [x] **5.21 `print` as a built-in call** — **`print(expr);`**
+  - Accepts any type. One argument.
+  - Reserved at the lexer level — users cannot define a function named `print`.
 
-- [x] **5.19 Scheduler types supported** — **Five built-in schedulers**, reserved keywords (users cannot name a variable `FCFS`, `RR`, etc.).
+- [x] **5.22 `func` declaration syntax** — **`func Name(param: type, ...) -> returnType { body }`**
+  - Named parameters with explicit types.
+  - Return type mandatory — no void functions.
+  - `return expr;` mandatory — bare `return;` is a syntax error.
 
-  | Keyword | Full name | Parameters |
+- [x] **5.23 Control flow** — `if / elif / else` and `while`. Conditions always parenthesized. Bodies always braced blocks.
+  - `elif` is a single keyword token, not `else if`.
+  - No `for`, no `do-while`, no `break`, no `continue`.
+
+- [x] **5.24 Enum declaration syntax** — **`enum Name { member, member, ... }`**
+  - Members assigned integer ordinals 0, 1, 2, … implicitly.
+  - The enum name and member names follow the standard identifier rules (§5.5) and are case-sensitive.
+  - Enum declarations are top-level only.
+  - Member names live in the global namespace — collisions with other identifiers are a compile-time error.
+
+  **Two-layer range enforcement for int-to-enum assignments (Sebesta §6.13, §6.14):**
+
+  | Right-hand side | When checked | Rule |
   |---|---|---|
-  | `FCFS` | First Come First Served | none |
-  | `SJF` | Shortest Job First | none |
-  | `SRTF` | Shortest Remaining Time First | none |
-  | `RR` | Round Robin | `quant: INT_LIT` (mandatory) |
-  | `PRIORITY` | Priority Scheduling (non-preemptive) | none |
+  | Enum member | — | Always valid |
+  | Enum variable of the same type | — | Always valid |
+  | `INT_LIT` | **Compile time** | Rejected if literal ∉ `[0, memberCount-1]` |
+  | Integer expression or variable | **Runtime** | Error thrown if value ∉ `[0, memberCount-1]` |
 
-  Only `RR` takes a parameter, because round-robin is undefined without a quantum. The other schedulers have no tunable knob in their textbook definition. `PRIORITY` is fixed as **non-preemptive** in OSlang — once a process starts, it runs to completion, even if a higher-priority process arrives later. This is a deliberate language-level decision rather than a per-system flag.
-
-  `quant` accepts an **integer literal only** (not a general expression). Rationale: the quantum is a static configuration parameter, conceptually constant per system, not a value the program computes. Allowing arbitrary expressions would suggest dynamic schedulers, which OSlang doesn't have. Sign and magnitude (`quant > 0`) are checked by the type checker — EBNF cannot express them.
-
-  ```
-  system Sys1(processes: [P1, P2], scheduler: FCFS);
-  system Sys2(processes: [P1, P2], scheduler: RR(quant: 2));
-  system Sys3(processes: [P1, P2], scheduler: PRIORITY);
-  ```
-
-- [x] **5.20 run statement syntax** — **`run(Name);`** or **`run(Name, until: N);`**
-  - `until: N` — optional, stops at clock cycle N.
-  - Without `until` — runs until all processes finish, safe max limit decided in Part 2.
-  - Why `until` not `ticks`: reads as natural English, avoids confusion with process `burst`.
-
-  ```
-  run(Sys1);
-  run(Sys1, until: 20);
-  ```
-
-- [x] **5.21 User-defined functions** — **`func Name(param: type, ...) -> returnType { body }`**
-  - Keyword: `func`.
-  - Parameters: explicit types, named with `:` convention.
-  - Valid parameter types: `int`, `float`, `bool`, `string`, `semaphore`, `process`. Enum types are first-class in variable declarations (§5.10) but **not yet in function parameter or return types** — that is deferred to Part 2. To pass an enum value into a function, declare the parameter as `int` and rely on the enum→int widening coercion from §5.10.
-  - Valid return types: `int`, `float`, `bool`, `string`. Returning a `semaphore` or `process` reference is not allowed.
-  - Return type: explicit, after `->`.
-  - Return statement: `return` keyword.
-  - Top level only — no nested functions.
-  - Empty parameter list is allowed: `func tick() -> int { ... }`.
-  - Body can call `wait`, `post`, `print` and access `p.state`, `p.burst` etc.
-
-  ```
-  func checkAndWait(s: semaphore, threshold: int) -> bool {
-      if (s < threshold) {
-          wait(s);
-          return true;
-      }
-      return false;
-  }
-
-  func computePriority(burst: int, arrival: int) -> int {
-      return burst + arrival;
-  }
-
-  func isBlocked(p: process) -> bool {
-      return p.state == blocked;
-  }
-  ```
-
-- [x] **5.22 Output commands** — **`print(expr);`**, function-call style, single argument.
-  - Accepts any expression — string, variable, process attribute, semaphore value, current tick.
-  - Simulation trace is automatic — printed by interpreter without explicit print calls.
-
-  ```
-  print("hello");
-  print(x);
-  print(tick);
-  print(P1.state);
-  print(P1.burst);
-  print(mutex);
-  ```
-
-- [x] **5.23 Control flow constructs** — **`if` / `elif` / `else`** and **`while`**.
-  - `elif` and `else` are optional.
-  - Parentheses required around conditions.
-  - `while` for condition-based loops — chosen over `for` to avoid requiring `for-each`.
-
-  ```
-  if (x > 0) {
-      print(x);
-  } elif (x == 0) {
-      print("zero");
-  } else {
-      print("negative");
-  }
-
-  while (x > 0) {
-      x <- x - 1;
-  }
-  ```
+  Sebesta §6.4.1 identifies range validity as a core enum design issue. §6.13 — type errors must be detected statically or dynamically. §6.14 — coercion weakens strong typing; we limit int-to-enum to provably valid cases. §6.15 — name equivalence prevents cross-enum assignment bugs.
 
 ---
 
-### Round 6 — Grammar
-
-- [x] **5.24 EBNF grammar** — *being drafted step by step. EBNF metasymbols follow Sebesta §3.3.2: `[ ]` optional, `{ }` zero-or-more repetition, `( ... | ... )` grouped alternatives. Where braces are used to express left-associative operator chains, associativity is not implied by the grammar itself (Sebesta §3.3.2, p.127) — it is enforced by the parser, consistent with our decision in §5.13.*
-
-  **Step 1 — Top-level structure (LOCKED)**
-
-  A program is one or more top-level items. An empty source file is a syntax error — every OSlang program must contain at least one declaration or executable statement. Ordering between declarations and executable statements (e.g., `run` after declarations) is a semantic concern handled by the type checker, not the grammar.
-
-  ```
-  <program>        ::= <top_level_decl> { <top_level_decl> }
-
-  <top_level_decl> ::= <static_decl>
-                     | <semaphore_decl>
-                     | <enum_decl>
-                     | <process_decl>
-                     | <func_decl>
-                     | <system_decl>
-                     | <add_stmt>
-                     | <run_stmt>
-  ```
-
-  **Step 2 — Declarations (in progress)**
-
-  Type rules — four context-specific type categories. `<decl_type>` is used in variable and static declarations and accepts enum names as well as simple types. `<param_type>` and `<return_type>` remain restricted to built-in types for now — enum types in function signatures are deferred to Part 2.
-
-  ```
-  <simple_type>    ::= "int" | "float" | "bool" | "string"
-
-  <decl_type>      ::= <simple_type> | IDENT
-                    // IDENT in type position is validated by the type checker
-                    // as a declared enum name — the grammar is permissive here
-
-  <param_type>     ::= <simple_type> | "semaphore" | "process"
-
-  <return_type>    ::= <simple_type>
-  ```
-
-  `static_decl` and `semaphore_decl` — initial value is any expression at the grammar level; type/sign constraints (e.g., semaphore initial value must be a non-negative int) are checked by the type checker.
-
-  ```
-  <static_decl>    ::= "static" <decl_type> IDENT "<-" <expr> ";"
-
-  <semaphore_decl> ::= "semaphore" IDENT "<-" <expr> ";"
-  ```
-
-  `enum_decl` — at least one member; trailing comma not allowed; no semicolon after `}`.
-
-  ```
-  <enum_decl>      ::= "enum" IDENT "{" <enum_members> "}"
-
-  <enum_members>   ::= IDENT { "," IDENT }
-  ```
-
-  `process_decl` header — closed field set encoded in the grammar (unknown field names are a parse error per §5.15). Three constraints are deferred to the type checker because EBNF cannot express them: `burst` mandatory, no duplicate fields, positive integer values.
-
-  ```
-  <process_decl>       ::= "process" IDENT "(" <process_fields> ")" <block>
-
-  <process_fields>     ::= <process_field> { "," <process_field> }
-
-  <process_field>      ::= <process_field_name> ":" <expr>
-
-  <process_field_name> ::= "burst" | "priority" | "arrival"
-  ```
-
-  `func_decl` header — empty parameter list allowed; return type mandatory.
-
-  ```
-  <func_decl>      ::= "func" IDENT "(" [ <param_list> ] ")" "->" <return_type> <block>
-
-  <param_list>     ::= <param> { "," <param> }
-
-  <param>          ::= IDENT ":" <param_type>
-  ```
-
-  `system_decl` — fixed field order (`processes` then `scheduler`); both fields mandatory; at least one process; scheduler names are reserved keywords. Fixing the order makes the grammar enforce all four constraints with no work left for the type checker — a real win compared to `process_decl` where flexible order forced us to defer checks.
-
-  ```
-  <system_decl>    ::= "system" IDENT "(" "processes" ":" "[" <process_list> "]"
-                                          "," "scheduler" ":" <scheduler>
-                                      ")" ";"
-
-  <process_list>   ::= IDENT { "," IDENT }
-
-  <scheduler>      ::= "FCFS"
-                     | "SJF"
-                     | "SRTF"
-                     | "PRIORITY"
-                     | "RR" "(" "quant" ":" INT_LIT ")"
-  ```
-
-  **Step 2 — Declarations (LOCKED)**
-
-  **Step 3 — Expressions (LOCKED)**
-
-  Bottom-up precedence cascade following §5.12 — lowest precedence (outermost) first, highest precedence (innermost) last. Sebesta §3.3.2 (p.127) note: `{ }` repetition does NOT encode left-associativity; the parser folds left per our §5.13 decision. Unary right-associativity (`!!x` parses as `!(!x)`) is encoded by `<unary_expr>` recursing on itself.
-
-  ```
-  <expr>                ::= <or_expr>
-
-  <or_expr>             ::= <and_expr> { "||" <and_expr> }
-
-  <and_expr>            ::= <equality_expr> { "&&" <equality_expr> }
-
-  <equality_expr>       ::= <relational_expr> { ( "==" | "!=" ) <relational_expr> }
-
-  <relational_expr>     ::= <additive_expr> { ( "<" | ">" | "<=" | ">=" ) <additive_expr> }
-
-  <additive_expr>       ::= <multiplicative_expr> { ( "+" | "-" ) <multiplicative_expr> }
-
-  <multiplicative_expr> ::= <unary_expr> { ( "*" | "/" | "%" ) <unary_expr> }
-
-  <unary_expr>          ::= ( "!" | "-" ) <unary_expr>
-                          | <postfix_expr>
-
-  <postfix_expr>        ::= <primary> [ "." <process_attr> ]
-
-  <process_attr>        ::= "state" | "burst" | "priority" | "arrival"
-
-  <primary>             ::= <literal>
-                          | IDENT [ "(" [ <arg_list> ] ")" ]
-                          | "(" <expr> ")"
-
-  <arg_list>            ::= <expr> { "," <expr> }
-
-  <literal>             ::= INT_LIT | FLOAT_LIT | BOOL_LIT | STRING_LIT
-  ```
-
-  Decisions baked into this:
-  - **Numeric literals are unsigned at the token level.** `INT_LIT` is digits only (e.g. `42`); negatives are formed by the unary `-` operator. `FLOAT_LIT` requires digits on both sides of the dot (e.g. `3.14`, `0.5`) — never `.5` or `5.`. This avoids ambiguity with the `.` in `p.state` and keeps the lexer simple.
-  - **Function calls are merged into `<primary>`.** A bare `IDENT` is a variable reference; `IDENT(...)` is a function call. Same parse path until the parser sees `(`.
-  - **`wait`, `post`, `print` are not special in the grammar.** They are ordinary function calls; the language defines them as built-in. The "this name is a built-in, not a user-defined function" check is a semantic concern.
-  - **Postfix dot-access is one level deep, closed attribute set.** Only `state`, `burst`, `priority`, `arrival` follow a `.`. Anything else is a parse error. `a.b.c` does not parse. There are no general method calls — `Sys1.add(...)` is a separate top-level statement form, not an instance of method-call syntax.
-
-  **Step 4 — Statements (LOCKED)**
-
-  A `<block>` is a brace-enclosed sequence of zero or more statements (matches §5.15 — process bodies are mandatory syntactically but can be empty). Statements come in six kinds.
-
-  ```
-  <block>          ::= "{" { <statement> } "}"
-
-  <statement>      ::= <var_decl_stmt>
-                     | <assign_stmt>
-                     | <call_stmt>
-                     | <if_stmt>
-                     | <while_stmt>
-                     | <return_stmt>
-
-  <var_decl_stmt>  ::= <decl_type> IDENT "<-" <expr> ";"
-
-  <assign_stmt>    ::= IDENT "<-" <expr> ";"
-
-  <call_stmt>      ::= IDENT "(" [ <arg_list> ] ")" ";"
-
-  <return_stmt>    ::= "return" <expr> ";"
-
-  <while_stmt>     ::= "while" "(" <expr> ")" <block>
-
-  <if_stmt>        ::= "if" "(" <expr> ")" <block>
-                       { "elif" "(" <expr> ")" <block> }
-                       [ "else" <block> ]
-  ```
-
-  Decisions baked into this:
-  - **Local variable declarations require an initializer.** `int x;` does not parse; `int x <- 0;` does. Sebesta §5.4.2 (reliability argument against implicit/incomplete declarations) and §5.4.3.2 (initialization is part of stack-dynamic elaboration) both support this. Modern precedent: C# `var`, Rust `let` (with caveats), Kotlin `val`/`var` with explicit initializers.
-  - **Assignment, function-call-as-statement, and expressions are syntactically distinct rules.** This implements §5.14 ("assignment is a statement only, never an expression") at the grammar level rather than after parsing. Defense: Sebesta §7.7.5 documents the bugs that arise when assignment is treated as an expression (the classic `if (x = y)` typo). Keeping these as separate productions makes the design decision visible in the grammar.
-  - **`return` always carries an expression.** No bare `return;`. Because §5.21 declares every function has a non-void return type, a bare `return;` would syntactically permit a function to violate its own type signature.
-  - **Dangling-else does not arise.** Sebesta §3.3.1.4 shows the canonical if-else ambiguity for languages where statements after `if`/`else` can be bare. OSlang sidesteps this entirely: every branch body is a mandatory `<block>` (always braced). No `<matched>`/`<unmatched>` non-terminal split is needed. Same approach as Swift, Rust, Go.
-  - **`elif` is a single keyword token**, not `else if`. Matches §5.23 and the Python convention. Saves a parse path.
-
-  **Step 5 — Top-level executable statements (LOCKED)**
-
-  Two operations on already-declared systems. Both are top-level only — they appear among `<top_level_decl>` alternatives, not inside any block. Reserved keywords (`run`, `add`) keep them grammar-special; they cannot be redefined or shadowed by user identifiers.
-
-  ```
-  <add_stmt>  ::= IDENT "." "add" "(" IDENT "," "arrival" ":" <expr> ")" ";"
-
-  <run_stmt>  ::= "run" "(" IDENT [ "," "until" ":" <expr> ] ")" ";"
-  ```
-
-  Decisions baked into this:
-  - **Both `arrival` and `until` accept `<expr>`**, not `INT_LIT`. Rationale: these are runtime values that may sensibly come from a variable (e.g. `until: maxTicks` where `maxTicks` is a `static int`). Only `quant` (in `<scheduler>`) is restricted to `INT_LIT`, because a scheduler quantum is a static configuration knob, not a runtime value.
-  - **`run` is a reserved keyword.** It cannot appear anywhere except as the start of `<run_stmt>`. A user cannot have a variable, function, or process named `run`. This is stricter than how `wait`/`post`/`print` are treated (those are ordinary identifiers that the language defines as built-ins), and it reflects that `run` has exactly one role in the language: starting a simulation at top level.
-  - **`add` is also a reserved keyword in this grammar** (it appears as the literal `"add"` in `<add_stmt>`). Same reasoning — `Sys1.add(...)` is a special, narrowly-scoped operation, not a general method call.
-
-  **Reserved keywords accumulated across the grammar.** The lexer must recognize these as their own token classes, not as identifiers:
-
-  - **Types and storage:** `int`, `float`, `bool`, `string`, `semaphore`, `process`, `system`, `enum`, `static`, `func`
-  - **Boolean literals:** `true`, `false` — recognized by the lexer as `BOOL_LIT` tokens, not grammar-level keywords (see Issue 4 resolution above)
-  - **Control flow:** `if`, `elif`, `else`, `while`, `return`
-  - **Built-in operations:** `wait`, `post`, `print` (treated as ordinary identifiers in the grammar — the language defines them as built-ins)
-  - **Scheduler names:** `FCFS`, `SJF`, `SRTF`, `RR`, `PRIORITY`
-  - **Field names (as keywords in their host rules):** `processes`, `scheduler`, `quant`, `burst`, `priority`, `arrival`, `until`
-  - **Process attribute names:** `state` (also `burst`, `priority`, `arrival` — overloaded with field names but unambiguous because of the leading `.`)
-  - **Top-level operations:** `run`, `add`
-
-  **Step 6 — Review pass (LOCKED — all 4 issues resolved)**
-
-  A full end-to-end audit of the grammar found four issues. All four are now resolved. The grammar shape (Steps 1–5) is sound — no ambiguities, no orphan rules, no undefined references, follows Sebesta §3.3.2 conventions, dangling-else avoided via mandatory `<block>`.
-
-  **Issue 1 — Enum types in declarations. RESOLVED: Option C (first-class in declarations).**
-
-  Enum types are now first-class in `<var_decl_stmt>` and `<static_decl>` via the new `<decl_type>` rule. `State s <- ready;` is legal. The §5.10 examples have been updated accordingly. Enum types remain excluded from `<param_type>` and `<return_type>` — deferred to Part 2. Exam justification: Sebesta §6.4.2 — using plain `int` to simulate enums eliminates type checking; making enum a proper type restores it.
-
-  **Issue 2 — `STRING_LIT` was undefined. RESOLVED.**
-
-  String literals use double-quote delimiters. Any character except `"` and newline is allowed unescaped. Supported escape sequences: `\"`, `\\`, `\n`, `\t`. Multi-line strings are not supported — a newline inside a string literal is a lexer error. Rationale: single-line restriction means an unclosed quote is caught on the same line, improving reliability (Sebesta §1.3). The lexer rule:
-
-  ```
-  STRING_LIT  ::=  '"'  { <str_char> }  '"'
-  <str_char>  ::=  any character except '"' and '\n'
-               |   '\' ( '"' | '\' | 'n' | 't' )
-  ```
-
-  `STRING_LIT` is a lexer-level rule only. The EBNF grammar references it as a terminal in `<literal>`.
-
-  **Issue 3 — Comments were missing. RESOLVED.**
-
-  Single-line comments only: `//` introduces a comment that extends to the end of the line. Multi-line `/* ... */` block comments are not supported — they would add a state to the lexer for no gain in a language this small (same rationale as Python's single-comment-style choice). Comments are stripped by the lexer; the parser never sees them.
-
-  ```
-  // This is a valid comment — everything after // until newline is ignored
-  semaphore mutex <- 1;  // inline comment also valid
-  ```
-
-  **Issue 4 — `BOOL_LIT` keyword vs. token. RESOLVED: Option A (lexer token).**
-
-  `true` and `false` are recognized by the lexer and emit a `BOOL_LIT` token with the boolean value. They are **not** quoted strings in the EBNF grammar — they are handled identically to `INT_LIT` and `FLOAT_LIT`. The lexer checks identifiers against the keyword table; when it matches `true` or `false`, it emits `BOOL_LIT` rather than `IDENT`. Removed `true` and `false` from the reserved keyword list — they are lexer-level reserved words that produce a literal token, not grammar-level keywords. Rationale: consistency with all other literal types (Sebesta §3.3.2 — tokens are classified by the lexer, grammar works with token classes).
-
-  **Two notes from the audit (no decision required, already documented):**
-
-  - The grammar is **LL(2) at one point**, not strictly LL(1): `<assign_stmt>` and `<call_stmt>` both start with `IDENT`, and the parser disambiguates by peeking the next token (`<-` → assignment, `(` → call). Standard recursive-descent handling. Must be documented in D1.
-  - **Enum member names can collide with process attribute names** (e.g. `enum State { burst, ready }`). The grammar is unambiguous (enum members appear as bare `IDENT`; process attributes only after `.`), but the type checker must reject this collision per the §5.10 rule that member names live in the global namespace.
+### Round 6 — EBNF grammar (Sebesta §3.3)
+
+- [x] **5.25 Grammar decisions during grammar writing:**
+  - `wait`, `post`, `print` are reserved keywords at the lexer level.
+  - `elif` is a single keyword token.
+  - `true` / `false` emit `BOOL_LIT` tokens, not keyword tokens.
+  - The grammar is **LL(2) at one point** — `<assign_stmt>` and `<call_stmt>` both start with `IDENT`, disambiguated by peeking the second token.
+  - Enum member names can collide with process attribute names — type checker must reject this.
+
+- [x] **5.26 Lexer implementation decisions:**
+  - Maximal munch for multi-character tokens: `<-`, `<=`, `>=`, `==`, `!=`, `&&`, `||`.
+  - Two distinct priority keyword tokens: `KW_PRIORITY` (scheduler context) and `KW_PRIORITY_F` (process field context).
+  - String literals unescaped at lex time.
+  - Removed `true` and `false` from the reserved keyword list — they produce a literal token, not a grammar-level keyword.
 
 ---
 
@@ -679,16 +245,16 @@ This section is filled in as decisions are locked. Each decision will record: th
 
 - [x] **5.27 Parameter-passing mode** — **Pass by value for primitives; always pass by reference for `semaphore` and `process`.**
   - Primitives (`int`, `float`, `bool`, `string`, `enum`) — callee gets a copy; caller's variable is never affected.
-  - `semaphore` and `process` — always by reference. They are shared OS resources; reference semantics are the only meaningful mode.
+  - `semaphore` and `process` — always by reference. A pass-by-value copy would be thrown away on return, meaning any `wait` or `post` inside the function would have no effect on the original semaphore — which would silently break synchronization.
   - No user-facing syntax — determined entirely by the type. No `&` symbol, no keyword.
 
-  Sebesta §8.3.1 — pass-by-value protects caller data, strong reliability default. §8.3 — when the parameter is a shared resource by domain definition, reference semantics are not a choice but a requirement.
+  Sebesta §9.5.2.1 — pass-by-value gives the callee a local copy; fast for scalars and protects the caller's data. §9.5.2.3 — pass-by-reference transmits an access path to the caller's actual variable; required here so that mutations via `wait`/`post` are visible after the function returns.
 
 - [x] **5.28 Short-circuit evaluation** — **Yes — both `&&` and `||` short-circuit.**
   - `&&` — if left operand is `false`, right operand is not evaluated. Result is `false`.
   - `||` — if left operand is `true`, right operand is not evaluated. Result is `true`.
 
-  Sebesta §7.6 — short-circuit avoids unnecessary computation and prevents unintended side effects from the right operand.
+  Sebesta §7.6 — short-circuit avoids unnecessary computation and prevents potential runtime errors from the unevaluated operand. The §7.6 warning about side effects in skipped operands does not apply — OSlang has no side effects in expressions (no `++`, no assignment-as-expression).
 
 - [x] **5.29 Operand evaluation order** — **Left to right, always.**
   - For primitive-only expressions this has no observable effect — pass-by-value means no side effects.
@@ -715,7 +281,7 @@ This section is filled in as decisions are locked. Each decision will record: th
   Sebesta §5.4.3 — implicit defaults must have a clear, domain-consistent meaning. Improves writability (§1.3.2) — no need to write `priority: 0` every time for a background process.
 
 - [x] **5.31 Strong typing rule — widening only, two implicit coercions.**
-  - OSlang is strongly typed. Exactly two implicit coercions allowed, both widening only:
+  - OSlang is **nearly strongly typed** (Sebesta §6.14). Exactly two implicit coercions allowed, both widening only:
 
   | Coercion | Example | Safe? |
   |---|---|---|
@@ -733,7 +299,9 @@ This section is filled in as decisions are locked. Each decision will record: th
   | `int` literal in range → `enum` | ✅ allowed (§5.10) |
   | `int` expression → `enum` | ✅ compiles, runtime check |
 
-  Sebesta §6.12 — strong typing means every type error is detected at compile time or runtime, never silently ignored. §6.13 — narrowing coercion silently discards data — a reliability violation (§1.3.3).
+  "Nearly strongly typed" because Sebesta §6.14 defines a strongly typed language as one where *all* type errors are detected. The two widening coercions are intentional exceptions — widening never loses data, but they do reduce the theoretical error-detection benefit. This is the same trade-off Java makes; Sebesta §6.14 uses Java as the canonical example of this model.
+
+  Sebesta §6.13 — narrowing coercion silently discards data — a reliability violation (§1.3.3). §6.14 — coercion weakens strong typing; our two widening-only coercions are deliberate and safe.
 
 - [x] **5.32 Type equivalence — name equivalence for all types.**
   - **Primitives** — name equivalence. `int` only compatible with `int` (plus widening coercions above).
@@ -743,16 +311,15 @@ This section is filled in as decisions are locked. Each decision will record: th
 
   ```
   if (mutex == 0) { ... }      // ✅ semaphore vs int
-  if (mutex > empty) { ... }   // ✅ semaphore vs semaphore — meaningful for multi-path logic
+  if (mutex > empty) { ... }   // ✅ semaphore vs semaphore
   if (mutex == true) { ... }   // ❌ type error
   print(mutex);                // ✅ prints current counter value as int
   ```
 
-  Sebesta §6.15 — name equivalence eliminates a class of subtle bugs where two types happen to look alike but mean different things. Semaphore vs semaphore and semaphore vs int comparisons are domain-justified exceptions — a semaphore counter is an integer by definition.
+  Sebesta §6.15 — name equivalence eliminates subtle bugs where two types happen to look alike but mean different things.
 
 - [x] **5.33 `print` output format for enum** — **Prints the member name string, not the integer ordinal.**
   - The ordinal is still used internally for comparisons and int-to-enum coercion — never shown via `print`.
-  - If the programmer wants the integer, they explicitly assign to `int` first.
 
   ```
   enum State { ready, running, blocked, finished }
@@ -762,21 +329,15 @@ This section is filled in as decisions are locked. Each decision will record: th
   print(x);      // prints:  1
   ```
 
-  Sebesta §1.3.1 readability — output must be meaningful without knowing the internal integer mapping.
+  Sebesta §1.3.1 readability — output must be meaningful without knowing the internal integer mapping. §6.4.2 — Java's enum toString() returns the member name for the same reason.
 
 ---
 
 ### Round 10 — Runtime and simulation behavior (Sebesta Ch. 3, 5)
 
 - [x] **5.34 Stop condition for `run` without `until`** — **Runs until all processes finished or deadlock detected.**
-  - No artificial tick cap — interpreter checks after each tick.
   - All processes `FINISHED` → simulation ends naturally.
   - All processes `BLOCKED` and none can unblock → deadlock message printed, simulation ends.
-
-  ```
-  run(Sys1);             // stops when all processes finish, or deadlock detected
-  run(Sys1, until: 20);  // stops at tick 20 regardless
-  ```
 
   Sebesta §3.5 — semantics should reflect actual meaning. "Run until done" means done when finished. Improves reliability (§1.3.3) — no silent early termination.
 
@@ -786,14 +347,7 @@ This section is filled in as decisions are locked. Each decision will record: th
   - Each instance has its own local variables (stack-dynamic). Static variables are shared.
   - Display name in trace: first instance is `P1`, second is `P1#1`.
 
-  ```
-  process P1(burst: 3, arrival: 5) { }
-  system Sys1(processes: [P1], scheduler: FCFS);
-  Sys1.add(P1, arrival: 2);
-  // Result: P1 starts at tick 2, P1#1 starts at tick 5
-  ```
-
-  Sebesta §5.4.3 — stack-dynamic local variables mean each activation has its own binding environment. Two instances of the same process are two separate activations. Matches the OS concept of process template vs process instance.
+  Sebesta §5.4.3.2 — stack-dynamic local variables mean each activation has its own binding environment. Two instances of the same process are two separate activations.
 
 - [x] **5.36 RR quantum behavior — real Round Robin, no wasted ticks.**
   - Process that **finishes mid-quantum** → releases CPU immediately. No wasted ticks.
@@ -801,46 +355,31 @@ This section is filled in as decisions are locked. Each decision will record: th
   - At start of each tick: arrivals are processed first, then scheduler picks from front of queue.
   - Newly arrived process joins back of queue — cannot jump ahead of processes already waiting.
 
-  ```
-  // quant: 2, P1 burst: 3, P2 burst: 3, P2 arrival: 3
-  tick 1 → P1 runs (quantum 1/2)
-  tick 2 → P1 runs (quantum 2/2) → quantum exhausted → P1 back of queue
-  tick 3 → P2 arrives → queue: [P1, P2] → P1 runs (quantum 1/2)
-  tick 4 → P1 runs (quantum 2/2) → quantum exhausted → back of queue
-  tick 5 → P2 runs (quantum 1/2)
-  ...
-  ```
-
-  Sebesta §3.5 — semantics must reflect real OS behavior. Real RR never holds the CPU for a finished process. Bounded waiting: every process gets a turn within `(n−1) × quantum` ticks.
+  Sebesta §3.5.1 — the tick-step rules in D1 §4.4 are written as informal operational semantics: each rule shows how one construct changes the simulation state. Real RR never holds the CPU for a finished process; bounded waiting guarantees every process gets a turn within `(n−1) × quantum` ticks.
 
 ---
 
 ### Round 11 — Type checker architecture (Sebesta Ch. 6)
 
-These three decisions fix the shared skeleton of `TypeChecker.java` before the work is split (Ferhat: expression + statement checking; Tuana: declaration + domain-specific checking). They are implementation-architecture decisions, agreed together so both halves plug in consistently — the same approach used earlier for the `Environment` and `RuntimeValue` APIs.
-
 - [x] **5.37 Compile-time type representation — single `OSlangType` class with a tag + optional enum fields.**
-  - One class with a `Kind` tag (`INT`, `FLOAT`, `BOOL`, `STRING`, `SEMAPHORE`, `PROCESS`, `VOID`, `ENUM`) plus two extra fields, `enumName` and `memberCount`, that are meaningful only when the kind is `ENUM`.
-  - Mirrors the existing `RuntimeValue` design (one class, one field per case) so the codebase stays uniform.
-  - `enumName` exists because §5.32 type equivalence is **name** equivalence — `Day` and `Month` are different types even with identical members, so equality of two enum types compares their names.
-  - `memberCount` exists because the §5.10 range check (`State bad <- 99;` is a compile-time error) needs to know the valid ordinal range `[0, memberCount-1]`.
-  - `equals()` is defined explicitly (not reference equality): kinds must match, and for `ENUM` the `enumName` must match too. `memberCount` is **not** part of equality — it is only used for the range check.
+  - One class with a `Kind` tag (`INT`, `FLOAT`, `BOOL`, `STRING`, `SEMAPHORE`, `PROCESS`, `VOID`, `ENUM`) plus two extra fields, `enumName` and `memberCount`, meaningful only when kind is `ENUM`.
+  - `enumName` exists because §5.32 type equivalence is name equivalence.
+  - `memberCount` exists because the §5.10 range check needs to know `[0, memberCount-1]`.
+  - `equals()` compares kinds; for `ENUM` also compares `enumName`. `memberCount` is NOT part of equality.
 
-  Sebesta §6.1 — a compile-time type is a distinct notion from a runtime value; keeping `OSlangType` separate from `RuntimeValue.Type` lets each carry only what its phase needs (the checker needs the enum name and member count; the interpreter does not).
+  Sebesta §6.1 — a compile-time type is a distinct notion from a runtime value.
 
 - [x] **5.38 Dispatch shape — `check()` for statements/declarations, `checkExpr()` for expressions.**
-  - `checkExpr(node)` always returns an `OSlangType` (the type of the expression); `check(node)` checks statements and declarations and returns nothing.
-  - Cleaner than one combined method, because statements have no type to return — a single method would have to return `OSlangType` and ignore it half the time.
-  - Mirrors the interpreter's `evaluate` / `execute` pair, and matches the work split (expression checking vs declaration/statement checking).
+  - `checkExpr(node)` returns an `OSlangType`; `check(node)` returns nothing.
+  - Mirrors the interpreter's `evaluate` / `execute` pair and matches the work split.
 
-  Sebesta §6.12 — type checking is the verification that each operation receives operands of compatible type; separating expression typing (which produces a type) from statement checking (which only verifies) keeps that responsibility explicit.
+  Sebesta §6.13 — separating expression typing from statement checking keeps responsibility explicit.
 
 - [x] **5.39 Symbol table — flat global map + pushed scope inside function/process bodies.**
-  - All top-level names — enums, processes, semaphores, functions, systems, static variables — live in a single global scope.
-  - A nested scope is pushed only when entering a function or process body (its parameters and local variables) and popped on exit.
-  - This reflects OSlang's actual scope shape: there is no deep nesting — effectively two levels, global and the inside of one function/process body. A full scope chain would be more general machinery than the language needs.
+  - All top-level names live in a single global scope.
+  - A nested scope is pushed only when entering a function or process body and popped on exit.
 
-  Sebesta §5.5 — static scoping resolves names by lexical structure; OSlang's structure is shallow, so a flat global plus a single pushed local scope is sufficient and is simpler to reason about and explain.
+  Sebesta §5.5 — static scoping resolves names by lexical structure; OSlang's two-level structure makes a flat global plus one pushed local scope sufficient.
 
 ---
 
@@ -973,4 +512,4 @@ java -cp out Main program.osl --dump-ast
 
 ---
 
-*Last updated: 21 May 2026.*
+*Last updated: 22 May 2026.*

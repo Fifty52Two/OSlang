@@ -164,6 +164,22 @@ public class TypeChecker {
         }
     }
 
+    private OSlangType resolveType(String typeName, int line) {
+        switch (typeName) {
+            case "int":    return OSlangType.INT;
+            case "float":  return OSlangType.FLOAT;
+            case "bool":   return OSlangType.BOOL;
+            case "string": return OSlangType.STRING;
+            case "semaphore": return OSlangType.SEMAPHORE;
+            case "process":   return OSlangType.PROCESS;
+            default:
+                if (enums.containsKey(typeName)) {
+                    return OSlangType.ofEnum(typeName, enums.get(typeName).size());
+                }
+                throw new TypeError("line " + line + ": unknown type '" + typeName + "'");
+        }
+    }
+
     // =========================================================================
     // Statement / declaration dispatch — §5.38 check(node) returns nothing
     // =========================================================================
@@ -267,20 +283,139 @@ public class TypeChecker {
     }
 
     private void checkSemaphoreDecl(SemaphoreDeclNode node) {
-        throw todo("Tuana", "checkSemaphoreDecl");
+        // name must not already be declared
+        if (globals.containsKey(node.name)) {
+            throw new TypeError("line " + node.line + ": '" + node.name + "' is already declared");
+        }
+        // initializer must be an int literal
+        if (!(node.init instanceof IntLitNode)) {
+            throw new TypeError("line " + node.line + ": semaphore '" + node.name
+                + "' initial value must be an integer literal");
+        }
+        // value must be >= 0
+        int value = ((IntLitNode) node.init).value;
+        if (value < 0) {
+            throw new TypeError("line " + node.line + ": semaphore '" + node.name
+                + "' initial value must be >= 0, got " + value);
+        }
+        // register in global scope as SEMAPHORE
+        globals.put(node.name, OSlangType.SEMAPHORE);
     }
 
     private void checkEnumDecl(EnumDeclNode node) {
-        throw todo("Tuana", "checkEnumDecl");
+        // Step 1 — enum name must not already be declared
+        if (globals.containsKey(node.name)) {
+            throw new TypeError("line " + node.line + ": '" + node.name + "' is already declared");
+        }
+
+        // Step 2 — no duplicate member names within this enum
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (String member : node.members) {
+            if (!seen.add(member)) {
+                throw new TypeError("line " + node.line + ": enum '" + node.name
+                    + "' has duplicate member '" + member + "'");
+            }
+        }
+
+        // Step 3 — no member name collides with an existing global name
+        for (String member : node.members) {
+            if (globals.containsKey(member)) {
+                throw new TypeError("line " + node.line + ": enum member '" + member
+                    + "' collides with an already declared global name");
+            }
+        }
+
+        // Step 4 — register enum name in globals
+        globals.put(node.name, OSlangType.ofEnum(node.name, node.members.size()));
+
+        // Step 5 — register members in the enums map
+        enums.put(node.name, node.members);
     }
 
     private void checkProcessDecl(ProcessDeclNode node) {
-        throw todo("Tuana", "checkProcessDecl");
+        // Step 1 — name must not already be declared
+        if (globals.containsKey(node.name)) {
+            throw new TypeError("line " + node.line + ": '" + node.name + "' is already declared");
+        }
+    
+        // Step 2 & 3 — burst mandatory, no duplicate fields
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        boolean hasBurst = false;
+        for (ProcessFieldNode field : node.fields) {
+            if (!seen.add(field.fieldName)) {
+                throw new TypeError("line " + field.line + ": process '" + node.name
+                    + "' has duplicate field '" + field.fieldName + "'");
+            }
+            if (field.fieldName.equals("burst")) hasBurst = true;
+        }
+        if (!hasBurst) {
+            throw new TypeError("line " + node.line + ": process '" + node.name
+                + "' is missing mandatory field 'burst'");
+        }
+    
+        // Step 4 — all field values must be int literals
+        //          burst/priority must be > 0, arrival must be >= 0
+        for (ProcessFieldNode field : node.fields) {
+            if (!(field.value instanceof IntLitNode)) {
+                throw new TypeError("line " + field.line + ": field '" + field.fieldName
+                    + "' in process '" + node.name + "' must be an integer literal");
+            }
+            int val = ((IntLitNode) field.value).value;
+            if (field.fieldName.equals("arrival")) {
+                if (val < 0) {
+                    throw new TypeError("line " + field.line + ": field 'arrival' in process '"
+                        + node.name + "' must be >= 0, got " + val);
+                }
+            } else {
+                if (val <= 0) {
+                    throw new TypeError("line " + field.line + ": field '" + field.fieldName
+                        + "' in process '" + node.name + "' must be > 0, got " + val);
+                }
+            }
+        }
+    
+        // Step 5 — register in globals
+        globals.put(node.name, OSlangType.PROCESS);
+    
+        // Step 6 — store node for domain checks later
+        processes.put(node.name, node);
     }
 
     private void checkFuncDecl(FuncDeclNode node) {
-        throw todo("Tuana", "checkFuncDecl");
-    }
+        // Step 1 — name must not already be declared
+        if (globals.containsKey(node.name)) {
+            throw new TypeError("line " + node.line + ": '" + node.name + "' is already declared");
+        }
+
+        // Step 2 — parameter names must be unique
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (ParamNode param : node.params) {
+            if (!seen.add(param.name)) {
+                throw new TypeError("line " + node.line + ": function '" + node.name
+                    + "' has duplicate parameter '" + param.name + "'");
+            }
+        }
+
+        // Step 3 — return type must be a valid simple type
+        java.util.Set<String> validTypes = new java.util.HashSet<>(
+            java.util.Arrays.asList("int", "float", "bool", "string")
+        );
+        if (!validTypes.contains(node.returnType)) {
+            throw new TypeError("line " + node.line + ": function '" + node.name
+                + "' has invalid return type '" + node.returnType + "'");
+        }
+
+        // Step 4 — build and store function signature
+        java.util.List<OSlangType> paramTypes = new java.util.ArrayList<>();
+        for (ParamNode param : node.params) {
+            paramTypes.add(resolveType(param.type, node.line));
+        }
+        OSlangType retType = resolveType(node.returnType, node.line);
+        functions.put(node.name, new FuncSig(paramTypes, retType));
+
+        // Step 5 — reserve the name in globals
+        globals.put(node.name, OSlangType.VOID);
+    }   
 
     // =========================================================================
     // TUANA — domain-specific checks
