@@ -115,6 +115,13 @@ public class TypeChecker {
 
     private final Map<String, SystemDeclNode> systems = new HashMap<>();
 
+    // Tracks the enclosing function's declared return type while walking a
+    // function body. null when not inside a function. checkReturnStmt reads
+    // this to verify the returned expression matches the declared return type.
+    // Saved/restored across walkFuncBody — there is no function nesting in
+    // OSlang (§5.21 — top-level only), but the save/restore pattern is safer.
+    private OSlangType currentReturnType = null;
+
     private void pushScope() { scopes.push(new HashMap<>()); }
     private void popScope()  { scopes.pop(); }
 
@@ -133,9 +140,102 @@ public class TypeChecker {
         return globals.get(name);
     }
 
+    /**
+     * Three-pass traversal of the program. The split exists so that forward
+     * references resolve cleanly and so that body checking sees a fully
+     * populated symbol table:
+     *
+     *   Pass 1 — register every top-level declaration (static, semaphore,
+     *            enum, process, func). Headers only; process/func BODIES are
+     *            intentionally NOT walked yet.
+     *   Pass 2 — now that every name is in scope, walk the process and
+     *            function bodies. A body may freely reference any other
+     *            top-level name regardless of source order.
+     *   Pass 3 — check system declarations and the top-level run/add
+     *            statements, which depend on processes already existing.
+     *
+     * Sebesta §5.5 — static scoping; §6.13 — name resolution at compile time.
+     */
     public void check(ProgramNode program) {
+        // Pass 1 — register declarations (no body walking)
         for (ASTNode item : program.declarations) {
-            check(item);
+            if (item instanceof StaticDeclNode
+                || item instanceof SemaphoreDeclNode
+                || item instanceof EnumDeclNode
+                || item instanceof ProcessDeclNode
+                || item instanceof FuncDeclNode) {
+                check(item);
+            }
+        }
+
+        // Pass 2 — walk process and function bodies
+        for (ASTNode item : program.declarations) {
+            if (item instanceof ProcessDeclNode) {
+                walkProcessBody((ProcessDeclNode) item);
+            } else if (item instanceof FuncDeclNode) {
+                walkFuncBody((FuncDeclNode) item);
+            }
+        }
+
+        // Pass 3 — check system / add / run statements
+        for (ASTNode item : program.declarations) {
+            if (item instanceof SystemDeclNode
+                || item instanceof RunStmtNode
+                || item instanceof AddStmtNode) {
+                check(item);
+            }
+        }
+    }
+
+    /**
+     * Walk a process body inside a pushed local scope (§5.39 — one inner scope
+     * per process/function). Process bodies have no parameters; the local scope
+     * holds only `int`/`float`/etc. variables declared inside the body via
+     * VarDeclStmtNode.
+     *
+     * currentReturnType stays null — a `return` statement inside a process
+     * body is a type error (process bodies are not functions and have no
+     * declared return type).
+     */
+    private void walkProcessBody(ProcessDeclNode node) {
+        pushScope();
+        try {
+            for (ASTNode stmt : node.body.statements) {
+                check(stmt);
+            }
+        } finally {
+            popScope();
+        }
+    }
+
+    /**
+     * Walk a function body inside a pushed local scope (§5.39). Differs from
+     * walkProcessBody in two ways:
+     *   - parameters are declared into the pushed scope before any statement
+     *     is checked, so the body can reference them (§5.21);
+     *   - currentReturnType is set to the function's declared return type so
+     *     checkReturnStmt can verify each `return expr;` matches.
+     *
+     * The save/restore around currentReturnType is defensive — OSlang has no
+     * nested functions today (§5.21), but the pattern keeps this method safe
+     * if that ever changes.
+     */
+    private void walkFuncBody(FuncDeclNode node) {
+        pushScope();
+        OSlangType previousReturnType = currentReturnType;
+        try {
+            for (ParamNode param : node.params) {
+                OSlangType paramType = resolveType(param.type, node.line);
+                declareVar(param.name, paramType);
+            }
+            currentReturnType = resolveType(node.returnType, node.line);
+
+            for (ASTNode stmt : node.body.statements) {
+                check(stmt);
+            }
+        } finally {
+            currentReturnType = previousReturnType;
+            popScope();
         }
     }
 
@@ -191,18 +291,372 @@ public class TypeChecker {
         return new TypeError("[" + who + " TODO] " + what + " not yet implemented");
     }
 
-    private OSlangType checkIdent(IdentNode node) { throw todo("Ferhat", "checkIdent"); }
-    private OSlangType checkBinOp(BinOpNode node) { throw todo("Ferhat", "checkBinOp"); }
-    private OSlangType checkUnaryOp(UnaryOpNode node) { throw todo("Ferhat", "checkUnaryOp"); }
-    private OSlangType checkFuncCall(FuncCallNode node) { throw todo("Ferhat", "checkFuncCall"); }
-    private OSlangType checkPostfixDot(PostfixDotNode node) { throw todo("Ferhat", "checkPostfixDot"); }
+    /**
+     * Resolve a bare identifier. Three things it could be (§5.39 + §5.10):
+     *   1. A local variable in a pushed scope — handled by lookupVar.
+     *   2. A top-level (global) name — also handled by lookupVar.
+     *   3. An enum member name — `Monday`, `blocked`, etc. Member names live
+     *      in the global namespace (§5.10) and resolve to their enum's type.
+     *
+     * The local-then-global order in lookupVar is correct: a function
+     * parameter named `x` shadows a global `x` for the duration of the body.
+     * Sebesta §5.5 — innermost scope wins in static scoping.
+     *
+     * If none of the three matches, the identifier is undeclared.
+     */
+    private OSlangType checkIdent(IdentNode node) {
+        // 1 + 2 — variable in scope chain or in globals
+        OSlangType varType = lookupVar(node.name);
+        if (varType != null) return varType;
 
-    private void checkBlock(BlockNode node) { throw todo("Ferhat", "checkBlock"); }
-    private void checkVarDeclStmt(VarDeclStmtNode node) { throw todo("Ferhat", "checkVarDeclStmt"); }
-    private void checkAssignStmt(AssignStmtNode node) { throw todo("Ferhat", "checkAssignStmt"); }
-    private void checkReturnStmt(ReturnStmtNode node) { throw todo("Ferhat", "checkReturnStmt"); }
-    private void checkIfStmt(IfStmtNode node) { throw todo("Ferhat", "checkIfStmt"); }
-    private void checkWhileStmt(WhileStmtNode node) { throw todo("Ferhat", "checkWhileStmt"); }
+        // 3 — enum member (e.g. `Monday` from `enum Day { Monday, ... }`)
+        for (Map.Entry<String, java.util.List<String>> entry : enums.entrySet()) {
+            if (entry.getValue().contains(node.name)) {
+                return OSlangType.ofEnum(entry.getKey(), entry.getValue().size());
+            }
+        }
+
+        // Nothing matched — undeclared.
+        throw new TypeError("line " + node.line
+            + ": undeclared identifier '" + node.name + "'");
+    }
+    /**
+     * Binary operator (§5.12 — precedence and §5.8 — coercion).
+     * The check splits the 13 operators into four groups by required operand
+     * shape; the result type is fixed per group.
+     *
+     *   Arithmetic  + - * /   numeric operands     -> widest of (int,float)
+     *               %         int operands only    -> int
+     *   Relational  < > <= >= numeric operands     -> bool
+     *   Equality    == !=     compatible operands  -> bool   (see below)
+     *   Logical     && ||     bool operands        -> bool
+     *
+     * "Compatible" for == / != covers:
+     *   - exact type match (§5.32 name equivalence)
+     *   - numeric mixing: int == float ok (both widen as needed)
+     *   - semaphore == int (§5.30): a semaphore exposes its counter as int
+     *   - enum vs int (§5.31): enum widens to int
+     *
+     * Sebesta §7.3 — operator type rules belong in the type checker, not the
+     * parser; §6.14 — coercion is limited to documented widenings.
+     */
+    private OSlangType checkBinOp(BinOpNode node) {
+        OSlangType left  = checkExpr(node.left);
+        OSlangType right = checkExpr(node.right);
+        String op = node.op;
+
+        // --- Arithmetic -------------------------------------------------
+        if (op.equals("+") || op.equals("-") || op.equals("*") || op.equals("/")) {
+            if (!isNumeric(left) || !isNumeric(right)) {
+                throw new TypeError("line " + node.line + ": operator '" + op
+                    + "' requires numeric operands, got " + left + " and " + right);
+            }
+            // §5.8 — int widens to float when mixed
+            if (left.equals(OSlangType.FLOAT) || right.equals(OSlangType.FLOAT)) {
+                return OSlangType.FLOAT;
+            }
+            return OSlangType.INT;
+        }
+        if (op.equals("%")) {
+            // Integer modulo — float % is intentionally disallowed
+            if (!left.equals(OSlangType.INT) || !right.equals(OSlangType.INT)) {
+                throw new TypeError("line " + node.line
+                    + ": operator '%' requires int operands, got "
+                    + left + " and " + right);
+            }
+            return OSlangType.INT;
+        }
+
+        // --- Relational -------------------------------------------------
+        if (op.equals("<") || op.equals(">") || op.equals("<=") || op.equals(">=")) {
+            if (!isNumeric(left) || !isNumeric(right)) {
+                throw new TypeError("line " + node.line + ": operator '" + op
+                    + "' requires numeric operands, got " + left + " and " + right);
+            }
+            return OSlangType.BOOL;
+        }
+
+        // --- Equality ---------------------------------------------------
+        if (op.equals("==") || op.equals("!=")) {
+            if (!equalityCompatible(left, right)) {
+                throw new TypeError("line " + node.line + ": operator '" + op
+                    + "' cannot compare " + left + " and " + right);
+            }
+            return OSlangType.BOOL;
+        }
+
+        // --- Logical ----------------------------------------------------
+        if (op.equals("&&") || op.equals("||")) {
+            if (!left.equals(OSlangType.BOOL) || !right.equals(OSlangType.BOOL)) {
+                throw new TypeError("line " + node.line + ": operator '" + op
+                    + "' requires bool operands, got " + left + " and " + right);
+            }
+            return OSlangType.BOOL;
+        }
+
+        throw new TypeError("line " + node.line + ": unknown binary operator '" + op + "'");
+    }
+
+    /** int or float — the §5.8 numeric category. */
+    private boolean isNumeric(OSlangType t) {
+        return t.equals(OSlangType.INT) || t.equals(OSlangType.FLOAT);
+    }
+
+    /**
+     * Equality compatibility per §5.32 plus the two documented exceptions
+     * (§5.30 semaphore-as-int, §5.31 enum-as-int via widening).
+     * The relation is symmetric — order of arguments does not matter.
+     */
+    private boolean equalityCompatible(OSlangType a, OSlangType b) {
+        if (a.equals(b)) return true;                                      // same type
+        if (isNumeric(a) && isNumeric(b)) return true;                      // int == float
+        if (a.equals(OSlangType.SEMAPHORE) && b.equals(OSlangType.INT)) return true;
+        if (b.equals(OSlangType.SEMAPHORE) && a.equals(OSlangType.INT)) return true;
+        if (a.isEnum() && b.equals(OSlangType.INT)) return true;            // enum -> int
+        if (b.isEnum() && a.equals(OSlangType.INT)) return true;
+        return false;
+    }
+    /**
+     * Unary operator (§5.12 level 1, right-associative per §5.13).
+     *   !x    requires bool       -> bool
+     *   -x    requires numeric    -> same numeric type (int or float)
+     *
+     * Note on `!!x` and `-(-x)`: the parser handles these by recursing on
+     * <unary_expr>, so checkExpr below sees the already-correctly-shaped
+     * tree — we just type-check one level here.
+     */
+    private OSlangType checkUnaryOp(UnaryOpNode node) {
+        OSlangType operand = checkExpr(node.operand);
+
+        if (node.op.equals("!")) {
+            if (!operand.equals(OSlangType.BOOL)) {
+                throw new TypeError("line " + node.line
+                    + ": operator '!' requires a bool operand, got " + operand);
+            }
+            return OSlangType.BOOL;
+        }
+        if (node.op.equals("-")) {
+            if (!isNumeric(operand)) {
+                throw new TypeError("line " + node.line
+                    + ": unary '-' requires a numeric operand, got " + operand);
+            }
+            return operand; // -int -> int, -float -> float
+        }
+        throw new TypeError("line " + node.line
+            + ": unknown unary operator '" + node.op + "'");
+    }
+    /**
+     * Function call as an expression (§5.21). The expression form mirrors
+     * Tuana's checkCallStmt for the user-function branch but returns the
+     * declared return type instead of dropping it.
+     *
+     * Built-ins wait/post/print can never appear here: they are reserved at
+     * the lexer level (§5.20, §5.21) and the parser routes them to
+     * CallStmtNode, not FuncCallNode. So FuncCallNode is ALWAYS a call to a
+     * user-defined function.
+     *
+     * argAssignable mirrors the §5.31 coercion table — exact match, or
+     * int -> float, or enum -> int. See its declaration in Tuana's section.
+     *
+     * Sebesta §9.5 — calls must agree with the declaration in arity and types.
+     */
+    private OSlangType checkFuncCall(FuncCallNode node) {
+        FuncSig sig = functions.get(node.name);
+        if (sig == null) {
+            throw new TypeError("line " + node.line
+                + ": call to undeclared function '" + node.name + "'");
+        }
+        if (node.args.size() != sig.params.size()) {
+            throw new TypeError("line " + node.line + ": function '" + node.name
+                + "' expects " + sig.params.size() + " argument(s), got "
+                + node.args.size());
+        }
+        for (int i = 0; i < node.args.size(); i++) {
+            OSlangType argType   = checkExpr(node.args.get(i));
+            OSlangType paramType = sig.params.get(i);
+            if (!argAssignable(argType, paramType)) {
+                throw new TypeError("line " + node.line + ": function '" + node.name
+                    + "' argument " + (i + 1) + " expects " + paramType
+                    + ", got " + argType);
+            }
+        }
+        return sig.returnType;
+    }
+    /**
+     * Postfix dot access (§5.26 — one level deep). The grammar only emits
+     * PostfixDotNode for the four closed attribute names: state, burst,
+     * priority, arrival. The parser rejects anything else, so the switch
+     * below is exhaustive — no default needed.
+     *
+     * Result types:
+     *   .state    -> enum `State` if the user declared one, else int.
+     *                Rationale: §5.33 says print(enumVar) shows the member
+     *                name, which is much more useful for an OS sim than a
+     *                bare integer. Falling back to int keeps programs that
+     *                don't declare `State` valid (enum -> int widening still
+     *                makes `p.state == 1` work either way).
+     *   .burst    -> int   (§5.15)
+     *   .priority -> int   (§5.15)
+     *   .arrival  -> int   (§5.15)
+     */
+    private OSlangType checkPostfixDot(PostfixDotNode node) {
+        OSlangType objType = checkExpr(node.object);
+        if (!objType.equals(OSlangType.PROCESS)) {
+            throw new TypeError("line " + node.line
+                + ": '." + node.attribute + "' requires a process, got " + objType);
+        }
+
+        switch (node.attribute) {
+            case "state": {
+                // Convention: if the user declared `enum State`, .state is that
+                // enum so print() shows the member name (§5.33).
+                if (enums.containsKey("State")) {
+                    return OSlangType.ofEnum("State", enums.get("State").size());
+                }
+                return OSlangType.INT;
+            }
+            case "burst":
+            case "priority":
+            case "arrival":
+                return OSlangType.INT;
+            default:
+                throw new TypeError("line " + node.line
+                    + ": unknown process attribute '" + node.attribute + "'");
+        }
+    }
+
+    /**
+     * Walk a brace-delimited block (§5.23). Per §5.39 OSlang has a strict
+     * two-level scope structure — global + one inner scope for a func/process
+     * body — so blocks inside `if`/`elif`/`else`/`while` do NOT push a new
+     * scope. This keeps variable lifetimes obvious: a `int x <- 0;` inside
+     * an `if` body is visible to the rest of the enclosing function body.
+     *
+     * Sebesta §5.5 — scoping is a deliberate language-design choice, not a
+     * universal rule; OSlang trades C-style block scoping for simplicity.
+     */
+    private void checkBlock(BlockNode node) {
+        for (ASTNode stmt : node.statements) {
+            check(stmt);
+        }
+    }
+    /**
+     * Local variable declaration inside a process or function body:
+     *   <decl_type> IDENT "<-" <expr> ";"
+     *
+     * Three checks, in this order:
+     *   1. The declared type must exist. resolveType throws if an enum name
+     *      is used that wasn't declared.
+     *   2. The initializer must be assignable to the declared type. The
+     *      shared assignable() helper applies §5.31 coercion rules and the
+     *      §5.10 enum-range check for int literals.
+     *   3. The name must be unique in the current scope. declareVar throws
+     *      on duplicates (it puts the binding in the innermost pushed scope
+     *      when one exists — exactly where we want it for body locals).
+     *
+     * Sebesta §5.4.1 — mandatory initializer eliminates uninitialized-variable
+     * bugs (also §5.10 — `int x;` without an initializer is a parse error).
+     */
+    private void checkVarDeclStmt(VarDeclStmtNode node) {
+        OSlangType declared = resolveType(node.declType, node.line);
+        assignable(declared, node.init, node.line);
+        declareVar(node.name, declared);
+    }
+    /**
+     * Assignment statement: IDENT "<-" <expr> ";"
+     *
+     * Type rule: the right-hand side must be assignable to the variable's
+     * declared type, using the same coercion/range rules as a declaration's
+     * initializer. The shared assignable() helper keeps that logic in one
+     * place across StaticDecl, VarDeclStmt and AssignStmt.
+     *
+     * Assignment is a statement, not an expression (§5.14) — so we return
+     * nothing.
+     *
+     * Sebesta §7.7 — assignment-as-statement removes accidental-assignment
+     * bugs (no `if (x <- 5)`); §6.13 — type-mismatch errors are caught here
+     * statically rather than at runtime.
+     */
+    private void checkAssignStmt(AssignStmtNode node) {
+        OSlangType targetType = lookupVar(node.target);
+        if (targetType == null) {
+            throw new TypeError("line " + node.line
+                + ": assignment to undeclared variable '" + node.target + "'");
+        }
+        assignable(targetType, node.value, node.line);
+    }
+    /**
+     * return <expr> ;   (§5.22). Two checks:
+     *   1. We must currently be inside a function body. walkFuncBody sets
+     *      currentReturnType when it enters one; walkProcessBody leaves it
+     *      null. So a `return` inside a process body is caught here as a
+     *      type error — process bodies never return a value.
+     *   2. The expression's type must match the declared return type, using
+     *      the same widening rules as parameter passing (int -> float,
+     *      enum -> int). Reusing argAssignable keeps the rules consistent.
+     *
+     * §5.22 also requires that a `return expr;` is present in every function
+     * — but that is a path-coverage check, not a type check. The interpreter
+     * raises a runtime error if a function reaches end-of-body with no
+     * return; we don't enforce it statically.
+     *
+     * Sebesta §9.10 — return must agree with the declared return type.
+     */
+    private void checkReturnStmt(ReturnStmtNode node) {
+        if (currentReturnType == null) {
+            throw new TypeError("line " + node.line
+                + ": 'return' outside of a function body");
+        }
+        OSlangType exprType = checkExpr(node.value);
+        if (!argAssignable(exprType, currentReturnType)) {
+            throw new TypeError("line " + node.line
+                + ": return expression has type " + exprType
+                + ", expected " + currentReturnType);
+        }
+    }
+    /**
+     * if / elif / else (§5.23). The condition on `if` and each `elif` must
+     * be a bool; bodies are normal blocks. The `else` block has no condition.
+     *
+     * No scope is pushed for the bodies — see checkBlock (§5.39). Dangling-
+     * else is grammatically impossible because every body is a mandatory
+     * brace-delimited block (Sebesta §3.3.1.4).
+     */
+    private void checkIfStmt(IfStmtNode node) {
+        OSlangType condType = checkExpr(node.condition);
+        if (!condType.equals(OSlangType.BOOL)) {
+            throw new TypeError("line " + node.line
+                + ": 'if' condition must be bool, got " + condType);
+        }
+        checkBlock(node.thenBlock);
+
+        for (ElifClauseNode elif : node.elifClauses) {
+            OSlangType elifType = checkExpr(elif.condition);
+            if (!elifType.equals(OSlangType.BOOL)) {
+                throw new TypeError("line " + elif.line
+                    + ": 'elif' condition must be bool, got " + elifType);
+            }
+            checkBlock(elif.body);
+        }
+
+        if (node.elseBlock != null) {
+            checkBlock(node.elseBlock);
+        }
+    }
+    /**
+     * while ( <expr> ) <block>   (§5.23). Condition bool, body checked as a
+     * normal block. Termination is the programmer's responsibility — there
+     * is no static check that the loop is finite (Sebesta §3.5 — undecidable
+     * in general). The interpreter caps total simulation ticks separately.
+     */
+    private void checkWhileStmt(WhileStmtNode node) {
+        OSlangType condType = checkExpr(node.condition);
+        if (!condType.equals(OSlangType.BOOL)) {
+            throw new TypeError("line " + node.line
+                + ": 'while' condition must be bool, got " + condType);
+        }
+        checkBlock(node.body);
+    }
 
     /**
      * Helper: is the initializer expression `initExpr` assignable to a variable
