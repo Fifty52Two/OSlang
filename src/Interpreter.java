@@ -12,7 +12,7 @@ import java.util.*;
 // Decisions locked (see README2.md §Decisions):
 //   D3 — Burst is a scheduler hint; body drives termination (one stmt/tick)
 //   D4 — Style-C table trace output (TICK | RUNNING | EVENT | READY | BLOCKED)
-//   D5 — ReturnException for function return propagation  ← PENDING CONFIRM
+//   D5 — ReturnException for function return propagation (CONFIRMED)
 //
 // Sebesta refs:
 //   §3.5  — operational semantics (each tick = one small-step transition)
@@ -27,7 +27,7 @@ public class Interpreter {
     // Thrown by execute(ReturnStmtNode), caught by evaluate(FuncCallNode).
     // Sebesta §3.5 — `return` is an abrupt control transfer; Java exceptions
     // are the cleanest host-language expression of that.
-    // DECISION D5: PENDING CONFIRMATION — assumed Option A (ReturnException)
+    // DECISION D5: CONFIRMED — Option A (ReturnException)
     // =========================================================================
     public static class ReturnException extends RuntimeException {
         public final RuntimeValue value;
@@ -63,6 +63,15 @@ public class Interpreter {
     }
 
     // =========================================================================
+    // Shared simulation state — set before runSimulation/stepRunningProcess
+    // so that executeWait/executePost (Tuana) can access it without changing
+    // method signatures. §5.27 — semaphore wait/post need the running process
+    // and simulation state. Reliability §1.3.3 — null-checked in wait/post.
+    // =========================================================================
+    private RuntimeValue.ProcessHandle currentProcess = null;
+    private SimState currentSim = null;
+
+    // =========================================================================
     // Public entry point
     // =========================================================================
 
@@ -77,7 +86,7 @@ public class Interpreter {
             if (node instanceof RunStmtNode) {
                 executeRun((RunStmtNode) node);
             } else if (node instanceof AddStmtNode) {
-                // TODO Tuana — executeAdd
+                executeAdd((AddStmtNode) node);
             }
         }
     }
@@ -102,8 +111,7 @@ public class Interpreter {
             for (int i = 0; i < n.members.size(); i++) {
                 String member = n.members.get(i);
                 enumMembers.put(member, new EnumEntry(n.name, i));
-                env.define(member,
-                    RuntimeValue.ofEnum(n.name, member, i));
+                env.define(member, RuntimeValue.ofEnum(n.name, member, i));
             }
 
         } else if (node instanceof FuncDeclNode) {
@@ -121,10 +129,6 @@ public class Interpreter {
     // Statement executor — Ferhat's half
     // =========================================================================
 
-    /**
-     * Execute a single statement node. Dispatches to the correct handler.
-     * Returns normally unless a ReturnException is thrown (function return).
-     */
     public void execute(ASTNode node) {
         if (node instanceof VarDeclStmtNode) {
             executeVarDecl((VarDeclStmtNode) node);
@@ -148,17 +152,7 @@ public class Interpreter {
     // -------------------------------------------------------------------------
     // VarDeclStmtNode — `int x <- expr;`
     // Ferhat
-    //
-    // Decision §5.31 (static typing): the type checker is authoritative. By
-    // the time we reach this node the declared type and the initializer's
-    // type are already known to match, so the interpreter just evaluates
-    // the initializer and binds the name.
-    //
-    // Environment.define() throws if the name is already bound in the
-    // current scope, so we get redeclaration-detection for free.
-    //
-    // Decision §5.10 (mandatory initializers): every var decl has a non-null
-    // `init`, so we never need to handle the "uninitialized" case.
+    // Decision §5.31: trust type checker. §5.10: mandatory initializer.
     // -------------------------------------------------------------------------
     private void executeVarDecl(VarDeclStmtNode node) {
         RuntimeValue value = evaluate(node.init);
@@ -168,19 +162,7 @@ public class Interpreter {
     // -------------------------------------------------------------------------
     // AssignStmtNode — `x <- expr;`
     // Ferhat
-    //
-    // Decision §5.14: assignment is a STATEMENT, never an expression — so
-    // there is no chained `a <- b <- c` to worry about. The target is a
-    // bare identifier (parser-enforced).
-    //
-    // Decision §5.9: `static` is a LIFETIME qualifier, not an access
-    // qualifier. A static variable is just a global binding, so writes to
-    // it go through the same scope-chain walk as any other assignment.
-    //
-    // Environment.assign() walks from the innermost scope outward and
-    // throws if the name is not declared anywhere — that gives us the
-    // "assign to undeclared variable" runtime error for free. (In practice
-    // the type checker will already have rejected this case.)
+    // Decision §5.14: assignment is statement only. §5.9: static is lifetime qualifier.
     // -------------------------------------------------------------------------
     private void executeAssign(AssignStmtNode node) {
         RuntimeValue value = evaluate(node.value);
@@ -190,20 +172,7 @@ public class Interpreter {
     // -------------------------------------------------------------------------
     // IfStmtNode — `if (cond) { } elif (cond) { } else { }`
     // Ferhat
-    //
-    // Decision §5.31 (static typing): the type checker has already verified
-    // every condition expression is bool, so we read `.boolVal` directly.
-    //
-    // Decision §5.8 (two-level scope): no per-block scope push — we just
-    // call executeBlock, which iterates statements.
-    //
-    // Elif/else handling: short-circuit. As soon as a branch's condition is
-    // true we execute its block and return. If no branch matched and an
-    // else exists, execute it. Otherwise do nothing (legal — else is
-    // optional per the grammar).
-    //
-    // A ReturnException thrown inside any executed block propagates up
-    // unchanged.
+    // Decision §5.31: read .boolVal directly. §5.8: no per-block scope push.
     // -------------------------------------------------------------------------
     private void executeIf(IfStmtNode node) {
         if (evaluate(node.condition).boolVal) {
@@ -224,17 +193,7 @@ public class Interpreter {
     // -------------------------------------------------------------------------
     // WhileStmtNode — `while (cond) { }`
     // Ferhat
-    //
-    // Decision: no iteration cap. Infinite loops are the programmer's
-    // responsibility — the same stance Java/C/Python take. Justification:
-    //   - Process-body loops are naturally bounded by the simulation tick
-    //     limit (Decision §3 hard scope: finite simulation time).
-    //   - Function-body loops are intended to be short helpers; adding an
-    //     arbitrary cap would penalize legitimate long loops.
-    //
-    // Standard pre-test loop semantics: re-evaluate the condition before
-    // every iteration. A ReturnException from any iteration's body
-    // propagates up unchanged and terminates the loop.
+    // Decision: no iteration cap — programmer's responsibility.
     // -------------------------------------------------------------------------
     private void executeWhile(WhileStmtNode node) {
         while (evaluate(node.condition).boolVal) {
@@ -244,18 +203,8 @@ public class Interpreter {
 
     // -------------------------------------------------------------------------
     // ReturnStmtNode — `return expr;`
-    // Ferhat — throws ReturnException (caught by evaluate(FuncCallNode) in Tuana's half)
-    //
-    // Decision D5: control-flow exception. `executeReturn` does not unwind
-    // the call stack itself; it relies on Java's exception machinery to
-    // pop frames until `evaluateFuncCall` catches it. This means a `return`
-    // nested arbitrarily deep inside if/while/blocks just works — every
-    // intervening `execute*` simply lets the exception pass through.
-    //
-    // Parser guarantees `node.value` is non-null: the grammar requires an
-    // expression after `return` (no bare `return;`). The type checker has
-    // already verified the expression's type matches the function's
-    // declared return type, so we just evaluate and throw.
+    // Ferhat — throws ReturnException (caught by evaluateFuncCall — Tuana)
+    // Decision D5: control-flow exception confirmed.
     // -------------------------------------------------------------------------
     private void executeReturn(ReturnStmtNode node) {
         RuntimeValue value = evaluate(node.value);
@@ -265,16 +214,7 @@ public class Interpreter {
     // -------------------------------------------------------------------------
     // BlockNode — `{ stmt* }`
     // Ferhat
-    //
-    // Decision §5.8: two-level scope only (global + function/process local).
-    // Blocks do NOT push their own scope. The single local scope is pushed
-    // once at function/process entry and popped on exit. This means a name
-    // declared inside { } remains visible in the rest of the function body —
-    // but the type checker already forbids re-declaration of an existing
-    // local name, so this cannot cause silent bugs.
-    //
-    // A ReturnException raised by any inner statement propagates up
-    // unchanged; we do not catch it here.
+    // Decision §5.8: no per-block scope push (two-level scope only).
     // -------------------------------------------------------------------------
     private void executeBlock(BlockNode node) {
         for (ASTNode stmt : node.statements) {
@@ -284,21 +224,13 @@ public class Interpreter {
 
     // -------------------------------------------------------------------------
     // CallStmtNode — built-ins: print, wait, post; also user func calls as stmts
-    // print → Ferhat | wait/post → Tuana | user func → Tuana (calls evaluate)
     // -------------------------------------------------------------------------
     private void executeCall(CallStmtNode node) {
         switch (node.name) {
-            case "print":
-                executePrint(node);
-                break;
-            case "wait":
-                executeWait(node); // TODO Tuana
-                break;
-            case "post":
-                executePost(node); // TODO Tuana
-                break;
+            case "print": executePrint(node); break;
+            case "wait":  executeWait(node);  break;
+            case "post":  executePost(node);  break;
             default:
-                // User-defined function called as a statement — evaluate and discard value
                 evaluate(new FuncCallNode(node.name, node.args, node.line));
                 break;
         }
@@ -306,17 +238,8 @@ public class Interpreter {
 
     // -------------------------------------------------------------------------
     // print — Ferhat
-    // Decision §5.32: enum prints member name; §5.35: semaphore prints counter.
-    // Both are already handled by RuntimeValue.toDisplayString().
-    //
-    // Argument joining: NO separator between arguments — the programmer
-    // controls all spacing via string literals. `print("x=", x, " y=", y);`
-    // produces `x=5 y=3` with exactly the spaces the programmer wrote.
-    // Rationale: predictable output, full programmer control. Matches the
-    // teaching-DSL philosophy of "you see exactly what you wrote".
-    //
-    // A single trailing newline is added so successive print calls don't
-    // run together.
+    // Decision §5.32: enum prints member name. §5.35: semaphore prints counter.
+    // No separator between args — programmer controls spacing.
     // -------------------------------------------------------------------------
     private void executePrint(CallStmtNode node) {
         StringBuilder sb = new StringBuilder();
@@ -328,24 +251,57 @@ public class Interpreter {
 
     // -------------------------------------------------------------------------
     // wait(semaphore) — Tuana
+    // P-operation (Sebesta §6.9 — semaphore as synchronization primitive)
+    // §5.27 — semaphore passed by reference; SemaphoreValue is shared
     // -------------------------------------------------------------------------
     private void executeWait(CallStmtNode node) {
-        // TODO Tuana
-        throw new RuntimeError("[Tuana TODO] executeWait not yet implemented");
+        RuntimeValue semVal = evaluate(node.args.get(0));
+        RuntimeValue.SemaphoreValue sem = semVal.semVal;
+
+        if (sem.counter > 0) {
+            sem.counter--;
+        } else {
+            if (currentProcess == null) {
+                throw new RuntimeError("wait() called outside of a running process");
+            }
+            currentProcess.state = RuntimeValue.ProcessHandle.State.BLOCKED;
+            sem.waitQueue.add(currentProcess.displayName());
+            currentSim.running = null;
+            if (!currentSim.blockedList.contains(currentProcess)) {
+                currentSim.blockedList.add(currentProcess);
+            }
+        }
     }
 
     // -------------------------------------------------------------------------
     // post(semaphore) — Tuana
+    // V-operation (Sebesta §6.9)
+    // §5.27 — semaphore passed by reference; SemaphoreValue is shared
     // -------------------------------------------------------------------------
     private void executePost(CallStmtNode node) {
-        // TODO Tuana
-        throw new RuntimeError("[Tuana TODO] executePost not yet implemented");
+        RuntimeValue semVal = evaluate(node.args.get(0));
+        RuntimeValue.SemaphoreValue sem = semVal.semVal;
+
+        if (!sem.waitQueue.isEmpty()) {
+            String waitingName = sem.waitQueue.poll();
+            for (RuntimeValue.ProcessHandle handle : currentSim.allProcesses) {
+                if (handle.displayName().equals(waitingName)
+                        && handle.state == RuntimeValue.ProcessHandle.State.BLOCKED) {
+                    handle.state = RuntimeValue.ProcessHandle.State.READY;
+                    currentSim.blockedList.remove(handle);
+                    currentSim.readyQueue.add(handle);
+                    break;
+                }
+            }
+        } else {
+            sem.counter++;
+        }
     }
 
     // =========================================================================
     // Expression evaluator — Tuana's half
-    // Returns a RuntimeValue for any expression node.
     // =========================================================================
+
     public RuntimeValue evaluate(ASTNode node) {
         if (node instanceof IntLitNode)     return RuntimeValue.ofInt(((IntLitNode) node).value);
         if (node instanceof FloatLitNode)   return RuntimeValue.ofFloat(((FloatLitNode) node).value);
@@ -359,39 +315,196 @@ public class Interpreter {
         throw new RuntimeError("Unknown expression node: " + node.getClass().getSimpleName());
     }
 
+    // -------------------------------------------------------------------------
+    // evaluateIdent — Tuana
+    // §5.5 — static scoping: walk scope chain first, enum map as fallback
+    // -------------------------------------------------------------------------
     private RuntimeValue evaluateIdent(IdentNode node) {
-        // TODO Tuana
-        throw new RuntimeError("[Tuana TODO] evaluateIdent not yet implemented");
+        try {
+            return env.lookup(node.name);
+        } catch (RuntimeException e) {
+            EnumEntry entry = enumMembers.get(node.name);
+            if (entry != null) {
+                return RuntimeValue.ofEnum(entry.typeName, node.name, entry.ordinal);
+            }
+        }
+        throw new RuntimeError("undefined identifier '" + node.name + "'");
     }
 
+    // -------------------------------------------------------------------------
+    // evaluateBinOp — Tuana
+    // §7.3.1 — short-circuit for && and ||
+    // §5.8   — int widens to float when mixed
+    // §5.30  — semaphore↔int: compare counter
+    // §5.31  — enum↔int: use ordinal
+    // §5.32  — name equivalence for enum equality
+    // -------------------------------------------------------------------------
     private RuntimeValue evaluateBinOp(BinOpNode node) {
-        // TODO Tuana
-        throw new RuntimeError("[Tuana TODO] evaluateBinOp not yet implemented");
+        String op = node.op;
+
+        if (op.equals("&&")) {
+            RuntimeValue left = evaluate(node.left);
+            if (!left.boolVal) return RuntimeValue.ofBool(false);
+            return RuntimeValue.ofBool(evaluate(node.right).boolVal);
+        }
+        if (op.equals("||")) {
+            RuntimeValue left = evaluate(node.left);
+            if (left.boolVal) return RuntimeValue.ofBool(true);
+            return RuntimeValue.ofBool(evaluate(node.right).boolVal);
+        }
+
+        RuntimeValue left  = evaluate(node.left);
+        RuntimeValue right = evaluate(node.right);
+
+        switch (op) {
+            case "+": case "-": case "*": case "/": {
+                boolean isFloat = (left.type == RuntimeValue.Type.FLOAT
+                                || right.type == RuntimeValue.Type.FLOAT);
+                double l = toDouble(left);
+                double r = toDouble(right);
+                double result;
+                switch (op) {
+                    case "+": result = l + r; break;
+                    case "-": result = l - r; break;
+                    case "*": result = l * r; break;
+                    case "/":
+                        if (r == 0) throw new RuntimeError("division by zero");
+                        result = l / r;
+                        break;
+                    default: result = 0;
+                }
+                return isFloat ? RuntimeValue.ofFloat(result) : RuntimeValue.ofInt((int) result);
+            }
+            case "%":
+                if (right.intVal == 0) throw new RuntimeError("modulo by zero");
+                return RuntimeValue.ofInt(left.intVal % right.intVal);
+            case "<":  return RuntimeValue.ofBool(toDouble(left) <  toDouble(right));
+            case ">":  return RuntimeValue.ofBool(toDouble(left) >  toDouble(right));
+            case "<=": return RuntimeValue.ofBool(toDouble(left) <= toDouble(right));
+            case ">=": return RuntimeValue.ofBool(toDouble(left) >= toDouble(right));
+            case "==": return RuntimeValue.ofBool(equalityCheck(left, right));
+            case "!=": return RuntimeValue.ofBool(!equalityCheck(left, right));
+            default:
+                throw new RuntimeError("unknown binary operator '" + op + "'");
+        }
     }
 
+    private double toDouble(RuntimeValue v) {
+        if (v.type == RuntimeValue.Type.INT)   return v.intVal;
+        if (v.type == RuntimeValue.Type.FLOAT) return v.floatVal;
+        if (v.type == RuntimeValue.Type.ENUM)  return v.enumOrdinal;
+        throw new RuntimeError("expected numeric value, got " + v.type);
+    }
+
+    private boolean equalityCheck(RuntimeValue a, RuntimeValue b) {
+        if (a.type == RuntimeValue.Type.SEMAPHORE && b.type == RuntimeValue.Type.INT)
+            return a.semVal.counter == b.intVal;
+        if (b.type == RuntimeValue.Type.SEMAPHORE && a.type == RuntimeValue.Type.INT)
+            return b.semVal.counter == a.intVal;
+        if (a.type == RuntimeValue.Type.ENUM && b.type == RuntimeValue.Type.INT)
+            return a.enumOrdinal == b.intVal;
+        if (b.type == RuntimeValue.Type.ENUM && a.type == RuntimeValue.Type.INT)
+            return b.enumOrdinal == a.intVal;
+        switch (a.type) {
+            case INT:    return a.intVal    == b.intVal;
+            case FLOAT:  return a.floatVal  == b.floatVal;
+            case BOOL:   return a.boolVal   == b.boolVal;
+            case STRING: return a.stringVal.equals(b.stringVal);
+            case ENUM:   return a.enumTypeName.equals(b.enumTypeName)
+                             && a.enumOrdinal == b.enumOrdinal;
+            default:
+                throw new RuntimeError("cannot compare values of type " + a.type);
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // evaluateUnaryOp — Tuana
+    // §5.12 — ! requires bool; - requires numeric, preserves type
+    // -------------------------------------------------------------------------
     private RuntimeValue evaluateUnaryOp(UnaryOpNode node) {
-        // TODO Tuana
-        throw new RuntimeError("[Tuana TODO] evaluateUnaryOp not yet implemented");
+        RuntimeValue operand = evaluate(node.operand);
+        switch (node.op) {
+            case "!": return RuntimeValue.ofBool(!operand.boolVal);
+            case "-":
+                if (operand.type == RuntimeValue.Type.INT)
+                    return RuntimeValue.ofInt(-operand.intVal);
+                return RuntimeValue.ofFloat(-operand.floatVal);
+            default:
+                throw new RuntimeError("unknown unary operator '" + node.op + "'");
+        }
     }
 
+    // -------------------------------------------------------------------------
+    // evaluateFuncCall — Tuana
+    // §9.5 — args evaluated in caller scope before push
+    // §5.39 — new scope pushed for body; always popped in finally
+    // D5 — ReturnException catches return value
+    // -------------------------------------------------------------------------
     private RuntimeValue evaluateFuncCall(FuncCallNode node) {
-        // TODO Tuana
-        throw new RuntimeError("[Tuana TODO] evaluateFuncCall not yet implemented");
+        FuncDeclNode decl = functions.get(node.name);
+        if (decl == null) {
+            throw new RuntimeError("call to undeclared function '" + node.name + "'");
+        }
+
+        List<RuntimeValue> argValues = new ArrayList<>();
+        for (int i = 0; i < node.args.size(); i++) {
+            RuntimeValue argVal = evaluate(node.args.get(i));
+            String declaredParamType = decl.params.get(i).type;
+            if (declaredParamType.equals("float") && argVal.type == RuntimeValue.Type.INT) {
+                argVal = RuntimeValue.ofFloat((double) argVal.intVal);
+            } else if (declaredParamType.equals("int") && argVal.type == RuntimeValue.Type.ENUM) {
+                argVal = RuntimeValue.ofInt(argVal.enumOrdinal);
+            }
+            argValues.add(argVal);
+        }
+
+        env.push();
+        try {
+            for (int i = 0; i < decl.params.size(); i++) {
+                env.define(decl.params.get(i).name, argValues.get(i));
+            }
+            for (ASTNode stmt : decl.body.statements) {
+                execute(stmt);
+            }
+            throw new RuntimeError("function '" + node.name + "' did not return a value");
+        } catch (ReturnException ret) {
+            return ret.value;
+        } finally {
+            env.pop();
+        }
     }
 
+    // -------------------------------------------------------------------------
+    // evaluatePostfixDot — Tuana
+    // §5.26 — closed attribute set: state, burst, priority, arrival
+    // -------------------------------------------------------------------------
     private RuntimeValue evaluatePostfixDot(PostfixDotNode node) {
-        // TODO Tuana
-        throw new RuntimeError("[Tuana TODO] evaluatePostfixDot not yet implemented");
+        RuntimeValue obj = evaluate(node.object);
+        if (obj.type != RuntimeValue.Type.PROCESS) {
+            throw new RuntimeError("'." + node.attribute + "' requires a process, got " + obj.type);
+        }
+        RuntimeValue.ProcessHandle handle = obj.procVal;
+        switch (node.attribute) {
+            case "state": {
+                int ordinal = handle.state.ordinal();
+                String[] stateNames = {"ready", "running", "blocked", "finished"};
+                if (enumMembers.containsKey("ready")) {
+                    return RuntimeValue.ofEnum("State", stateNames[ordinal], ordinal);
+                }
+                return RuntimeValue.ofInt(ordinal);
+            }
+            case "burst":    return RuntimeValue.ofInt(handle.burst);
+            case "priority": return RuntimeValue.ofInt(handle.priority);
+            case "arrival":  return RuntimeValue.ofInt(handle.arrival);
+            default:
+                throw new RuntimeError("unknown process attribute '" + node.attribute + "'");
+        }
     }
 
     // =========================================================================
     // Simulation engine — Ferhat's half
     // =========================================================================
 
-    /**
-     * Simulation state — one per running system.
-     * Shared across all scheduler methods so they can read/modify process states.
-     */
     private static class SimState {
         final SystemDeclNode systemNode;
         final List<RuntimeValue.ProcessHandle> allProcesses = new ArrayList<>();
@@ -399,40 +512,18 @@ public class Interpreter {
         final List<RuntimeValue.ProcessHandle> blockedList  = new ArrayList<>();
         RuntimeValue.ProcessHandle running = null;
         int tick = 0;
-        int limit = 100; // default, overridden by `until` or -1 for natural termination
+        int limit = -1; // -1 = natural termination; >= 0 = explicit until cap
 
-        // Per-process: index of next statement to execute in its body
         final Map<String, Integer> programCounters = new HashMap<>();
-
-        // Per-process: local variable bindings, persisted across ticks.
-        // On each step we push these into the shared env, execute one statement,
-        // then snapshot them back out before popping.
-        // Key: process displayName(). Value: the local bindings map for that process.
         final Map<String, Map<String, RuntimeValue>> processLocals = new HashMap<>();
 
         SimState(SystemDeclNode node) { this.systemNode = node; }
     }
 
     // -------------------------------------------------------------------------
-    // executeRun — entry point for `run(SysName, until: N);`
-    // Ferhat
-    //
-    // Decision §5.34 (Stop condition for `run` without `until`):
-    //   - With `until: N` → run for exactly N ticks
-    //   - Without `until` → run until all processes FINISHED, or deadlock
-    //     (all BLOCKED with no unblock possible). No artificial tick cap.
-    //
-    // We use `limit = -1` inside SimState as the sentinel for "no explicit
-    // until; terminate on natural completion or deadlock". runSimulation
-    // interprets this.
-    //
-    // Process fields (burst/priority/arrival) are extracted from the
-    // ProcessDeclNode's field list. The parser allows fields in any order;
-    // the type checker has already verified burst is present, and that
-    // values are int literals.
-    //
-    // Decision §5.30 (default priority): if `priority:` is omitted, it
-    // defaults to 0 (lowest). §5.15: if `arrival:` is omitted, defaults to 0.
+    // executeRun — Ferhat
+    // Decision §5.34: -1 = natural termination (all finished or deadlock)
+    // Decision §5.30: default priority 0. §5.15: default arrival 0.
     // -------------------------------------------------------------------------
     private void executeRun(RunStmtNode node) {
         SystemDeclNode sys = systems.get(node.systemName);
@@ -442,41 +533,32 @@ public class Interpreter {
 
         SimState sim = new SimState(sys);
 
-        // Build a ProcessHandle for each process named in the system
         for (String procName : sys.processes) {
             ProcessDeclNode pd = processes.get(procName);
             if (pd == null) {
                 throw new RuntimeError("process '" + procName + "' referenced in system '"
                                        + sys.name + "' is not declared");
             }
-
-            int burst    = readIntField(pd, "burst",    -1); // mandatory; -1 means "missing" (shouldn't happen)
-            int priority = readIntField(pd, "priority",  0); // §5.30 default
-            int arrival  = readIntField(pd, "arrival",   0); // §5.15 default
+            int burst    = readIntField(pd, "burst",    -1);
+            int priority = readIntField(pd, "priority",  0);
+            int arrival  = readIntField(pd, "arrival",   0);
 
             RuntimeValue.ProcessHandle handle =
                 new RuntimeValue.ProcessHandle(procName, 0, burst, arrival, priority);
-
             sim.allProcesses.add(handle);
             sim.programCounters.put(handle.displayName(), 0);
         }
 
-        // Set the tick limit from `until: N`, or -1 for "natural termination"
-        if (node.until != null) {
-            sim.limit = ((IntLitNode) node.until).value;
-        } else {
-            sim.limit = -1;
-        }
+        sim.limit = (node.until != null) ? ((IntLitNode) node.until).value : -1;
 
-        // Hand off to the tick loop
+        // Set shared sim state for Tuana's wait/post before entering loop
+        this.currentSim = sim;
+
         runSimulation(sim);
+
+        this.currentSim = null;
     }
 
-    /**
-     * Read an int-valued field (`burst:`, `priority:`, `arrival:`) from a
-     * ProcessDeclNode's field list. Returns `defaultValue` if absent.
-     * The type checker has verified all field values are int literals.
-     */
     private int readIntField(ProcessDeclNode pd, String fieldName, int defaultValue) {
         for (ProcessFieldNode f : pd.fields) {
             if (f.fieldName.equals(fieldName)) {
@@ -487,50 +569,22 @@ public class Interpreter {
     }
 
     // -------------------------------------------------------------------------
-    // Tick loop — Ferhat
-    // One iteration = one CPU tick. Decision D3: one statement per tick.
-    //
-    // Decision: ticks are 0-indexed (Silberschatz/Tanenbaum Gantt chart
-    // convention). The first tick printed is tick 0.
-    //
-    // Decision: re-schedule every tick (Option A). The scheduler is the
-    // single source of truth for "who runs this tick" — non-preemptive
-    // schedulers return the same process if it's still ready; preemptive
-    // schedulers (SRTF, RR) may override.
-    //
-    // Decision §5.34: termination conditions
-    //   1. If `until: N` was given → stop when tick > N
-    //   2. All processes FINISHED → stop naturally
-    //   3. All non-finished processes BLOCKED with non-empty wait queues,
-    //      and ready queue is empty → deadlock; print message and stop
-    //
-    // Order inside the loop matters:
-    //   - admitArrivals first (a process arriving at tick T must be
-    //     eligible at tick T)
-    //   - then check termination (an `until` of N means N+1 ticks shown:
-    //     tick 0..N inclusive; we stop AFTER printing tick N)
-    //   - dispatch picks the runner
-    //   - step executes one statement and prints the trace line
+    // runSimulation — Ferhat
+    // Decision D3: one statement per tick. Ticks 0-indexed.
+    // Decision: re-schedule every tick (Option A).
+    // Decision §5.34: stop on all-finished, until-cap, or deadlock.
     // -------------------------------------------------------------------------
     private void runSimulation(SimState sim) {
         printTraceHeader();
-
         sim.tick = 0;
+
         while (true) {
-            // 1. Move newly-arrived processes into ready
             admitArrivals(sim);
 
-            // 2. Termination check — natural completion
-            if (allFinished(sim)) {
-                break;
-            }
+            if (allFinished(sim)) break;
 
-            // 3. Termination check — explicit `until: N` cap
-            if (sim.limit >= 0 && sim.tick > sim.limit) {
-                break;
-            }
+            if (sim.limit >= 0 && sim.tick > sim.limit) break;
 
-            // 4. Termination check — deadlock (no until specified)
             if (sim.limit < 0 && isDeadlocked(sim)) {
                 System.out.println();
                 System.out.println("DEADLOCK at tick " + sim.tick
@@ -538,25 +592,21 @@ public class Interpreter {
                 break;
             }
 
-            // 5. Pick the runner for this tick (preemption handled inside)
             sim.running = dispatch(sim);
 
-            // 6. Execute one step (or print idle line if nothing to run)
             if (sim.running == null) {
                 printTraceLine(sim.tick, "-", "idle", sim);
             } else {
+                // Set currentProcess for Tuana's wait/post
+                this.currentProcess = sim.running;
                 stepRunningProcess(sim);
+                this.currentProcess = null;
             }
 
             sim.tick++;
         }
     }
 
-    /**
-     * Dispatch to the scheduler named in the system declaration.
-     * Returns the ProcessHandle that should run this tick (may be null
-     * if no ready process exists).
-     */
     private RuntimeValue.ProcessHandle dispatch(SimState sim) {
         switch (sim.systemNode.scheduler.name) {
             case "FCFS":     return scheduleFCFS(sim);
@@ -565,12 +615,10 @@ public class Interpreter {
             case "SRTF":     return scheduleSRTF(sim);
             case "RR":       return scheduleRR(sim);
             default:
-                throw new RuntimeError("unknown scheduler: "
-                                       + sim.systemNode.scheduler.name);
+                throw new RuntimeError("unknown scheduler: " + sim.systemNode.scheduler.name);
         }
     }
 
-    /** True if every process in the system is FINISHED. */
     private boolean allFinished(SimState sim) {
         for (RuntimeValue.ProcessHandle p : sim.allProcesses) {
             if (p.state != RuntimeValue.ProcessHandle.State.FINISHED) return false;
@@ -578,31 +626,14 @@ public class Interpreter {
         return true;
     }
 
-    /**
-     * Deadlock: every non-finished process is BLOCKED, the ready queue is
-     * empty, and no future arrival can change that (arrival > tick exists?
-     * — if yes, not deadlocked, just waiting).
-     */
     private boolean isDeadlocked(SimState sim) {
         if (!sim.readyQueue.isEmpty()) return false;
-
         boolean anyBlocked = false;
         for (RuntimeValue.ProcessHandle p : sim.allProcesses) {
-            switch (p.state) {
-                case BLOCKED: anyBlocked = true; break;
-                case READY:   return false; // shouldn't happen given ready empty, but safe
-                case RUNNING: return false;
-                case FINISHED: /* ignore */ break;
-                default:      break;
-            }
-            // A process not yet arrived still has hope
-            if (p.state == RuntimeValue.ProcessHandle.State.READY
-                && p.arrival > sim.tick) {
-                return false;
-            }
+            if (p.state == RuntimeValue.ProcessHandle.State.BLOCKED)  { anyBlocked = true; }
+            if (p.state == RuntimeValue.ProcessHandle.State.READY)    { return false; }
+            if (p.state == RuntimeValue.ProcessHandle.State.RUNNING)  { return false; }
         }
-        // Also check for not-yet-arrived processes — they're in allProcesses
-        // but not in any queue yet. If any will arrive in the future, no deadlock.
         for (RuntimeValue.ProcessHandle p : sim.allProcesses) {
             if (p.state != RuntimeValue.ProcessHandle.State.FINISHED
                 && p.arrival > sim.tick
@@ -615,19 +646,8 @@ public class Interpreter {
     }
 
     // -------------------------------------------------------------------------
-    // Ready queue management — Ferhat
+    // admitArrivals — Ferhat
     // -------------------------------------------------------------------------
-
-    /** Move arriving processes into the ready queue at the current tick.
-     *
-     * A process is eligible to enter the ready queue when:
-     *   (a) its state is READY (not blocked/running/finished), AND
-     *   (b) its arrival tick <= the current tick, AND
-     *   (c) it is not already in the ready queue.
-     *
-     * We iterate allProcesses (≤10 by §3 hard scope) so contains() is trivial.
-     * Processes are added in declaration order; the scheduler handles ordering.
-     */
     private void admitArrivals(SimState sim) {
         for (RuntimeValue.ProcessHandle p : sim.allProcesses) {
             if (p.state == RuntimeValue.ProcessHandle.State.READY
@@ -638,21 +658,11 @@ public class Interpreter {
         }
     }
 
-    /** Execute one statement from the running process body.
-     *
-     * Per-process local variables persist across ticks (Decision Option B):
-     *   1. push a fresh local scope onto the shared env
-     *   2. restore this process's saved local bindings into it
-     *   3. execute the next statement (advance PC)
-     *   4. snapshot bindings back, then pop the local scope
-     *
-     * If the statement is the last one, mark the process FINISHED and
-     * remove it from the ready queue.
-     *
-     * Decision D3: one statement per tick. `remainingBurst` decrements
-     * each tick as a scheduler hint for SJF/SRTF, regardless of whether
-     * body completion is the real termination criterion.
-     */
+    // -------------------------------------------------------------------------
+    // stepRunningProcess — Ferhat
+    // Per-process locals persisted across ticks via snapshot/restore (Option B).
+    // Decision D3: one statement per tick, remainingBurst decrements as hint.
+    // -------------------------------------------------------------------------
     private void stepRunningProcess(SimState sim) {
         RuntimeValue.ProcessHandle p = sim.running;
         String key = p.displayName();
@@ -661,34 +671,33 @@ public class Interpreter {
         List<ASTNode> stmts = pd.body.statements;
         int pc = sim.programCounters.getOrDefault(key, 0);
 
-        // Swap in this process's local scope
         env.push();
         Map<String, RuntimeValue> locals =
             sim.processLocals.getOrDefault(key, new HashMap<>());
         env.restoreLocalBindings(locals);
 
-        // Execute the statement at pc
         ASTNode stmt = stmts.get(pc);
-        String event = describeStmt(stmt); // for trace line
+        String event = describeStmt(stmt);
         p.state = RuntimeValue.ProcessHandle.State.RUNNING;
 
         try {
             execute(stmt);
             pc++;
         } catch (ReturnException re) {
-            // return inside a process body — treat as process finishing
             pc = stmts.size();
         }
 
-        // Snapshot locals back before popping
         sim.processLocals.put(key, env.snapshotLocalBindings());
         env.pop();
 
-        // Decrement remainingBurst each tick (Decision D3 — scheduler hint)
         if (p.remainingBurst > 0) p.remainingBurst--;
 
-        // Check if process has finished all its statements
-        if (pc >= stmts.size()) {
+        // If process blocked during this step (executeWait set state to BLOCKED)
+        // do not mark finished — just print the trace and leave state as BLOCKED
+        if (p.state == RuntimeValue.ProcessHandle.State.BLOCKED) {
+            sim.programCounters.put(key, pc);
+            printTraceLine(sim.tick, key, event + " BLOCKED", sim);
+        } else if (pc >= stmts.size()) {
             p.state = RuntimeValue.ProcessHandle.State.FINISHED;
             sim.readyQueue.remove(p);
             sim.running = null;
@@ -700,84 +709,58 @@ public class Interpreter {
         }
     }
 
-    /**
-     * Produce a short human-readable description of a statement for the
-     * trace EVENT column. Covers the most common cases; falls back to the
-     * node class name for anything exotic.
-     */
     private String describeStmt(ASTNode stmt) {
         if (stmt instanceof CallStmtNode) {
             CallStmtNode c = (CallStmtNode) stmt;
-            if (!c.args.isEmpty()) {
-                // e.g. "wait(mutex)" or "print(...)"
-                return c.name + "(" + describeArg(c.args.get(0)) + ")";
-            }
+            if (!c.args.isEmpty()) return c.name + "(" + describeArg(c.args.get(0)) + ")";
             return c.name + "()";
         }
-        if (stmt instanceof AssignStmtNode) {
-            return ((AssignStmtNode) stmt).target + " <- ...";
-        }
-        if (stmt instanceof VarDeclStmtNode) {
-            return "decl " + ((VarDeclStmtNode) stmt).name;
-        }
-        if (stmt instanceof IfStmtNode)    return "if (...)";
-        if (stmt instanceof WhileStmtNode) return "while (...)";
-        if (stmt instanceof ReturnStmtNode) return "return";
+        if (stmt instanceof AssignStmtNode)  return ((AssignStmtNode) stmt).target + " <- ...";
+        if (stmt instanceof VarDeclStmtNode) return "decl " + ((VarDeclStmtNode) stmt).name;
+        if (stmt instanceof IfStmtNode)      return "if (...)";
+        if (stmt instanceof WhileStmtNode)   return "while (...)";
+        if (stmt instanceof ReturnStmtNode)  return "return";
         return stmt.getClass().getSimpleName();
     }
 
-    /** Best-effort one-word description of an expression for the trace. */
     private String describeArg(ASTNode expr) {
-        if (expr instanceof IdentNode)    return ((IdentNode) expr).name;
-        if (expr instanceof IntLitNode)   return String.valueOf(((IntLitNode) expr).value);
+        if (expr instanceof IdentNode)     return ((IdentNode) expr).name;
+        if (expr instanceof IntLitNode)    return String.valueOf(((IntLitNode) expr).value);
         if (expr instanceof StringLitNode) return "\"" + ((StringLitNode) expr).value + "\"";
         return "...";
     }
 
     // -------------------------------------------------------------------------
-    // FCFS scheduler — Ferhat
-    // Non-preemptive. Pick the ready process with the lowest arrival time.
-    // Tie-break: declaration order (stable sort preserves insertion order).
-    //
-    // Non-preemptive guard (Option A): if a process is already running and
-    // still has work left, return it immediately without consulting the queue.
-    // Only pick a new process when the runner slot is empty.
+    // scheduleFCFS — Ferhat
+    // Non-preemptive. Lowest arrival time. Tie-break: declaration order.
     // -------------------------------------------------------------------------
     private RuntimeValue.ProcessHandle scheduleFCFS(SimState sim) {
-        // Non-preemptive: keep current runner if still going
         if (sim.running != null
                 && sim.running.state != RuntimeValue.ProcessHandle.State.FINISHED
                 && sim.running.state != RuntimeValue.ProcessHandle.State.BLOCKED) {
             return sim.running;
         }
         if (sim.readyQueue.isEmpty()) return null;
-        // Pick the process with the lowest arrival time
         RuntimeValue.ProcessHandle best = null;
         for (RuntimeValue.ProcessHandle p : sim.readyQueue) {
-            if (best == null || p.arrival < best.arrival) {
-                best = p;
-            }
+            if (best == null || p.arrival < best.arrival) best = p;
         }
         sim.readyQueue.remove(best);
         return best;
     }
 
     // -------------------------------------------------------------------------
-    // PRIORITY scheduler — Ferhat
-    // Non-preemptive. Pick the ready process with the highest priority value.
-    // Tie-break: lowest arrival time (FCFS within same priority level).
-    //
-    // Decision §5.30: higher integer = higher priority. Default priority = 0.
+    // schedulePRIORITY — Ferhat
+    // Non-preemptive. Highest priority. Tie-break: lowest arrival.
+    // Decision §5.30: higher integer = higher priority.
     // -------------------------------------------------------------------------
     private RuntimeValue.ProcessHandle schedulePRIORITY(SimState sim) {
-        // Non-preemptive: keep current runner if still going
         if (sim.running != null
                 && sim.running.state != RuntimeValue.ProcessHandle.State.FINISHED
                 && sim.running.state != RuntimeValue.ProcessHandle.State.BLOCKED) {
             return sim.running;
         }
         if (sim.readyQueue.isEmpty()) return null;
-        // Pick highest priority; tie-break on lowest arrival
         RuntimeValue.ProcessHandle best = null;
         for (RuntimeValue.ProcessHandle p : sim.readyQueue) {
             if (best == null
@@ -791,75 +774,145 @@ public class Interpreter {
     }
 
     // -------------------------------------------------------------------------
-    // SJF scheduler — Tuana
+    // scheduleSJF — Tuana
+    // Non-preemptive. Smallest burst. Tie-break: lowest arrival.
     // -------------------------------------------------------------------------
     private RuntimeValue.ProcessHandle scheduleSJF(SimState sim) {
-        // TODO Tuana
-        throw new RuntimeError("[Tuana TODO] scheduleSJF not yet implemented");
+        if (sim.running != null
+                && sim.running.state != RuntimeValue.ProcessHandle.State.FINISHED
+                && sim.running.state != RuntimeValue.ProcessHandle.State.BLOCKED) {
+            return sim.running;
+        }
+        RuntimeValue.ProcessHandle best = null;
+        for (RuntimeValue.ProcessHandle p : sim.readyQueue) {
+            if (best == null) { best = p; continue; }
+            if (p.burst < best.burst) { best = p; }
+            else if (p.burst == best.burst && p.arrival < best.arrival) { best = p; }
+        }
+        if (best != null) sim.readyQueue.remove(best);
+        return best;
     }
 
     // -------------------------------------------------------------------------
-    // SRTF scheduler — Tuana
+    // scheduleSRTF — Tuana
+    // Preemptive. Smallest remainingBurst. Runner competes every tick.
     // -------------------------------------------------------------------------
     private RuntimeValue.ProcessHandle scheduleSRTF(SimState sim) {
-        // TODO Tuana
-        throw new RuntimeError("[Tuana TODO] scheduleSRTF not yet implemented");
+        List<RuntimeValue.ProcessHandle> candidates = new ArrayList<>(sim.readyQueue);
+        if (sim.running != null
+                && sim.running.state == RuntimeValue.ProcessHandle.State.RUNNING) {
+            candidates.add(sim.running);
+        }
+        RuntimeValue.ProcessHandle best = null;
+        for (RuntimeValue.ProcessHandle p : candidates) {
+            if (best == null) { best = p; continue; }
+            if (p.remainingBurst < best.remainingBurst) { best = p; }
+            else if (p.remainingBurst == best.remainingBurst && p.arrival < best.arrival) { best = p; }
+        }
+        if (best != null && best != sim.running && sim.running != null) {
+            sim.running.state = RuntimeValue.ProcessHandle.State.READY;
+            sim.readyQueue.add(sim.running);
+            sim.running = null;
+        }
+        if (best != null) sim.readyQueue.remove(best);
+        return best;
     }
 
     // -------------------------------------------------------------------------
-    // RR scheduler — Tuana
+    // scheduleRR — Tuana
+    // Round-robin with fixed quantum. Exhausted process goes to back of queue.
     // -------------------------------------------------------------------------
     private RuntimeValue.ProcessHandle scheduleRR(SimState sim) {
-        // TODO Tuana
-        throw new RuntimeError("[Tuana TODO] scheduleRR not yet implemented");
+        int quantum = ((IntLitNode) sim.systemNode.scheduler.quant).value;
+
+        if (sim.running != null
+                && sim.running.state == RuntimeValue.ProcessHandle.State.RUNNING) {
+            sim.running.remainingQuantum--;
+            if (sim.running.remainingQuantum <= 0) {
+                sim.running.state = RuntimeValue.ProcessHandle.State.READY;
+                sim.readyQueue.add(sim.running);
+                sim.running = null;
+            } else {
+                return sim.running;
+            }
+        }
+
+        if (sim.readyQueue.isEmpty()) return null;
+        RuntimeValue.ProcessHandle next = sim.readyQueue.remove(0);
+        next.remainingQuantum = quantum;
+        return next;
     }
 
     // -------------------------------------------------------------------------
     // executeAdd — Tuana
+    // §5.19: injects a second independent instance. §5.35: display name P1#1.
     // -------------------------------------------------------------------------
     private void executeAdd(AddStmtNode node) {
-        // TODO Tuana
-        throw new RuntimeError("[Tuana TODO] executeAdd not yet implemented");
+        SystemDeclNode sysDecl = systems.get(node.systemName);
+        if (sysDecl == null) {
+            throw new RuntimeError("add refers to undeclared system '" + node.systemName + "'");
+        }
+        ProcessDeclNode procDecl = processes.get(node.processName);
+        if (procDecl == null) {
+            throw new RuntimeError("add refers to undeclared process '" + node.processName + "'");
+        }
+
+        RuntimeValue arrivalVal = evaluate(node.arrival);
+        int arrivalTick = (arrivalVal.type == RuntimeValue.Type.ENUM)
+            ? arrivalVal.enumOrdinal : arrivalVal.intVal;
+
+        if (currentSim != null && arrivalTick < currentSim.tick) {
+            throw new RuntimeError("add: arrival tick " + arrivalTick
+                + " has already passed (current tick is " + currentSim.tick + ")");
+        }
+
+        int burst = 1, priority = 0;
+        for (ProcessFieldNode field : procDecl.fields) {
+            int val = ((IntLitNode) field.value).value;
+            switch (field.fieldName) {
+                case "burst":    burst    = val; break;
+                case "priority": priority = val; break;
+            }
+        }
+
+        int instanceId = 0;
+        if (currentSim != null) {
+            for (RuntimeValue.ProcessHandle h : currentSim.allProcesses) {
+                if (h.name.equals(node.processName)) instanceId++;
+            }
+        }
+
+        RuntimeValue.ProcessHandle newHandle = new RuntimeValue.ProcessHandle(
+            node.processName, instanceId, burst, arrivalTick, priority
+        );
+        newHandle.state = RuntimeValue.ProcessHandle.State.READY;
+
+        if (currentSim != null) {
+            currentSim.allProcesses.add(newHandle);
+            currentSim.programCounters.put(newHandle.displayName(), 0);
+        }
     }
 
     // =========================================================================
     // Style-C trace output — Ferhat
-    // Decision D4: table with columns TICK | RUNNING | EVENT | READY | BLOCKED
-    //
-    // Example:
-    // TICK  RUNNING      EVENT                     READY-QUEUE          BLOCKED
-    //    1  Producer     wait(empty) ok            [Consumer]           []
-    //    2  Producer     wait(mutex) ok            [Consumer]           []
-    //    3  -            Producer FINISHED         [Consumer]           []
+    // Decision D4: TICK(6) RUNNING(12) EVENT(25) READY-QUEUE(20) BLOCKED(20)
+    // Ticks 0-indexed (Silberschatz/Tanenbaum convention).
     // =========================================================================
 
     private static final String TRACE_HEADER =
         String.format("%-6s %-12s %-25s %-20s %-20s",
             "TICK", "RUNNING", "EVENT", "READY-QUEUE", "BLOCKED");
 
-    /** Print the header once at simulation start. */
     private void printTraceHeader() {
         System.out.println(TRACE_HEADER);
         System.out.println("-".repeat(TRACE_HEADER.length()));
     }
 
-    /**
-     * Print one trace line for the current tick.
-     * Ferhat implements this in the tick loop.
-     *
-     * @param tick       current tick number
-     * @param running    display name of running process, or "-" if none
-     * @param event      what happened this tick (e.g. "wait(mutex) ok", "FINISHED")
-     * @param sim        simulation state — used to build ready/blocked queue strings
-     */
     private void printTraceLine(int tick, String running, String event, SimState sim) {
-        String readyStr   = queueString(sim.readyQueue);
-        String blockedStr = queueString(sim.blockedList);
         System.out.println(String.format("%-6d %-12s %-25s %-20s %-20s",
-            tick, running, event, readyStr, blockedStr));
+            tick, running, event, queueString(sim.readyQueue), queueString(sim.blockedList)));
     }
 
-    /** Build a compact queue string: "[Producer, Consumer]" or "[]" */
     private String queueString(List<RuntimeValue.ProcessHandle> queue) {
         if (queue.isEmpty()) return "[]";
         StringBuilder sb = new StringBuilder("[");
