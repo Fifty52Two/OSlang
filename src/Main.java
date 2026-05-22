@@ -12,7 +12,25 @@ public class Main {
             System.exit(1);
         }
 
-        String source = Files.readString(Path.of(args[0]));
+        // Scan args: first non-flag is the source file, then look for flags
+        String sourcePath = null;
+        boolean dumpTokens = false;
+        boolean dumpAst    = false;
+        for (String arg : args) {
+            if (arg.equals("--dump-tokens"))      dumpTokens = true;
+            else if (arg.equals("--dump-ast"))    dumpAst    = true;
+            else if (sourcePath == null)          sourcePath = arg;
+            else {
+                System.err.println("Unknown argument: " + arg);
+                System.exit(1);
+            }
+        }
+        if (sourcePath == null) {
+            System.err.println("Usage: java -cp out Main <file.osl> [--dump-tokens | --dump-ast]");
+            System.exit(1);
+        }
+
+        String source = Files.readString(Path.of(sourcePath));
 
         // ── Lexer phase ──────────────────────────────────────────────────────
         Lexer lexer = new Lexer(source);
@@ -26,7 +44,7 @@ public class Main {
         }
 
         // --dump-tokens: print token stream and stop
-        if (args.length > 1 && args[1].equals("--dump-tokens")) {
+        if (dumpTokens) {
             tokens.forEach(System.out::println);
             return;
         }
@@ -43,12 +61,30 @@ public class Main {
         }
 
         // --dump-ast: print AST and stop
-        if (args.length > 1 && args[1].equals("--dump-ast")) {
+        if (dumpAst) {
             ast.dump(0);
             return;
         }
 
-        // Default: report success
-        System.out.println("OK — parsed successfully.");
+        // ── Type-check phase ─────────────────────────────────────────────────
+        TypeChecker typeChecker = new TypeChecker();
+        try {
+            typeChecker.check(ast);
+        } catch (RuntimeException e) {
+            // TypeError extends RuntimeException — print and exit, do NOT run interpreter
+            System.err.println(e.getMessage());
+            System.exit(1);
+            return;
+        }
+
+        // ── Interpreter phase ────────────────────────────────────────────────
+        Interpreter interpreter = new Interpreter();
+        try {
+            interpreter.interpret(ast);
+        } catch (RuntimeException e) {
+            System.err.println(e.getMessage());
+            System.exit(1);
+            return;
+        }
     }
 }
