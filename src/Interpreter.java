@@ -647,12 +647,15 @@ public class Interpreter {
 
     // -------------------------------------------------------------------------
     // admitArrivals — Ferhat
+    // Bug fixes: exclude running process and blocked processes
     // -------------------------------------------------------------------------
     private void admitArrivals(SimState sim) {
         for (RuntimeValue.ProcessHandle p : sim.allProcesses) {
             if (p.state == RuntimeValue.ProcessHandle.State.READY
                     && p.arrival <= sim.tick
-                    && !sim.readyQueue.contains(p)) {
+                    && !sim.readyQueue.contains(p)
+                    && p != sim.running
+                    && !sim.blockedList.contains(p)) {
                 sim.readyQueue.add(p);
             }
         }
@@ -696,6 +699,10 @@ public class Interpreter {
         // do not mark finished — just print the trace and leave state as BLOCKED
         if (p.state == RuntimeValue.ProcessHandle.State.BLOCKED) {
             sim.programCounters.put(key, pc);
+            sim.readyQueue.remove(p);
+            if (!sim.blockedList.contains(p)) {
+                sim.blockedList.add(p);
+            }
             printTraceLine(sim.tick, key, event + " BLOCKED", sim);
         } else if (pc >= stmts.size()) {
             p.state = RuntimeValue.ProcessHandle.State.FINISHED;
